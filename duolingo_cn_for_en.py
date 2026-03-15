@@ -981,7 +981,7 @@ def print_xp_summary(label, xp_data):
 
 
 def login_duolingo(page):
-    page.goto("https://www.duolingo.com/log-in")
+    page.goto("https://www.duolingo.com/?isLoggingIn=true")
     page.wait_for_load_state("domcontentloaded")
     page.wait_for_timeout(3000)
 
@@ -1040,7 +1040,8 @@ def login_duolingo(page):
     # Try multiple selectors for login button
     login_clicked = False
     login_btn_selectors = [
-        'button[data-test="register-button"]',
+        'button:has-text("SIGN IN")',
+        'button:has-text("Sign in")',
         'button:has-text("Log in")',
         'button:has-text("LOG IN")',
         'button[type="submit"]',
@@ -1066,8 +1067,28 @@ def login_duolingo(page):
         page.wait_for_timeout(10000)
         current_url = page.url
         print(f"  Login step done - current URL: {current_url}")
+
+        # Try to read any error message on the page
+        try:
+            error_selectors = [
+                '[data-test="invalid-form-field-message"]',
+                '[class*="error"]',
+                '[class*="Error"]',
+                '[role="alert"]',
+                '.invalid-form-field',
+            ]
+            for sel in error_selectors:
+                try:
+                    el = page.locator(sel).first
+                    if el.is_visible(timeout=1000):
+                        print(f"  ⚠ Login error: {el.inner_text()}")
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
         # Check if we're still on login page
-        if "/log-in" in current_url or "/login" in current_url:
+        if "/log-in" in current_url or "/login" in current_url or "isLoggingIn" in current_url:
             try:
                 page.screenshot(path="login_failed.png")
                 print("  ⚠ Saved login_failed.png for debugging")
@@ -1080,7 +1101,14 @@ def main():
     with sync_playwright() as p:
 
         headless = os.getenv("HEADLESS", "false").lower() == "true"
-        browser = p.chromium.launch(headless=headless)
+        browser = p.chromium.launch(
+            headless=headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        )
 
         ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
@@ -1100,6 +1128,12 @@ def main():
 
         page = context.new_page()
 
+        # Hide automation indicators
+        page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            delete navigator.__proto__.webdriver;
+        """)
+
         if not os.path.exists(SESSION_FILE):
             login_duolingo(page)
             print("Saving session...")
@@ -1112,7 +1146,7 @@ def main():
         # Verify we're logged in (not redirected to login page)
         current_url = page.url
         print(f"Current URL after navigation: {current_url}")
-        if "/log-in" in current_url or "/login" in current_url or "/register" in current_url:
+        if "/log-in" in current_url or "/login" in current_url or "/register" in current_url or "isLoggingIn" in current_url:
             print("⚠ Session expired or invalid, logging in again...")
             # Delete stale session
             if os.path.exists(SESSION_FILE):
@@ -1123,7 +1157,7 @@ def main():
             page.wait_for_load_state("domcontentloaded")
             page.wait_for_timeout(5000)
             # Final check
-            if "/log-in" in page.url or "/login" in page.url:
+            if "/log-in" in page.url or "/login" in page.url or "isLoggingIn" in page.url:
                 raise Exception(f"Login failed. Current URL: {page.url}")
 
         # Check XP before starting
