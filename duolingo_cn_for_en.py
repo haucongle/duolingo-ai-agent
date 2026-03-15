@@ -930,7 +930,9 @@ def get_xp(page):
         # Save current URL to return later
         current_url = page.url
 
-        page.goto(profile_url, wait_until="domcontentloaded")
+        # Cache-bust: append timestamp to force fresh data
+        cache_bust = f"?cb={int(time.time())}"
+        page.goto(profile_url + cache_bust, wait_until="domcontentloaded")
         page.wait_for_timeout(2000)
 
         # Scrape stats from profile page
@@ -939,16 +941,13 @@ def get_xp(page):
 
         page_text = page.inner_text("body")
 
-        # Find all "NNN XP" matches and pick the right one
-        # Profile page shows XP in stats section - usually the smaller/specific number
+        # Find all "NNN XP" matches
         all_xp = re.findall(r'([\d,]+)\s*XP', page_text)
         if all_xp:
             xp_values = [int(v.replace(",", "")) for v in all_xp]
-            # Debug: show all found values
-            # Take the last XP value (profile stats are lower on page)
-            # The profile XP is typically NOT the largest (that's total/gems area)
-            # Take the last occurrence - profile stats are usually lower on page
-            xp = xp_values[-1]
+            print(f"    XP values found on profile: {xp_values}")
+            # Take the largest value (total XP)
+            xp = max(xp_values)
 
         # Match streak like "1 day streak" or "5 day streak"
         streak_match = re.search(r'(\d+)\s*day\s*streak', page_text, re.IGNORECASE)
