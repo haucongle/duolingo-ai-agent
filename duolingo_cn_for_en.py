@@ -880,9 +880,9 @@ def start_lesson(page):
                 continue
 
     if not clicked_start:
-        print("  Could not find START button. Please start a lesson manually.")
-        input("  Press ENTER after starting a lesson...")
-        return False
+        print("  Could not find START button, trying practice mode...")
+        start_practice_mode(page)
+        return True
 
     # Step 2: Click "START +XX XP" button in the popup
     if click_start_xp_button(page):
@@ -983,11 +983,12 @@ def print_xp_summary(label, xp_data):
 def login_duolingo(page):
     page.goto("https://www.duolingo.com/log-in")
     page.wait_for_load_state("domcontentloaded")
+    page.wait_for_timeout(2000)
 
     email_input = page.locator("#web-ui1")
     password_input = page.locator("#web-ui2")
 
-    email_input.wait_for(timeout=20000)
+    email_input.wait_for(timeout=30000)
 
     human_sleep(0.3, 0.8)
     email_input.fill(EMAIL)
@@ -996,9 +997,14 @@ def login_duolingo(page):
     human_sleep(0.5, 1.5)
 
     page.locator('button:has-text("Log in")').click()
-    page.wait_for_timeout(5000)
 
-    print("Login step done")
+    # Wait for redirect to /learn after login
+    try:
+        page.wait_for_url("**/learn**", timeout=15000)
+        print("Login successful - redirected to learn page")
+    except Exception:
+        page.wait_for_timeout(8000)
+        print(f"Login step done - current URL: {page.url}")
 
 
 def main():
@@ -1007,16 +1013,21 @@ def main():
         headless = os.getenv("HEADLESS", "false").lower() == "true"
         browser = p.chromium.launch(headless=headless)
 
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
         if os.path.exists(SESSION_FILE):
             print("Loading saved session...")
             context = browser.new_context(
                 viewport={"width": 1280, "height": 800},
                 storage_state=SESSION_FILE,
-                user_agent="Mozilla/5.0",
+                user_agent=ua,
             )
         else:
             print("No session found → logging in")
-            context = browser.new_context(viewport={"width": 1280, "height": 800})
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                user_agent=ua,
+            )
 
         page = context.new_page()
 
