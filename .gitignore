@@ -1,0 +1,8 @@
+duo_session.json
+__pycache__/
+*.pyc
+.venv/
+.idea/
+.vscode/
+
+.env
