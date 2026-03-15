@@ -31,6 +31,8 @@ SESSION_FILE = "duo_session.json"
 WRONG_ANSWER_CHANCE = 0.12
 # Max deliberate wrong answers per lesson (Duolingo allows 5 hearts total)
 MAX_WRONG_PER_LESSON = 2
+# Max lessons to complete (0 = unlimited). Set via env MAX_LESSONS.
+MAX_LESSONS = int(os.getenv("MAX_LESSONS", "0"))
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -874,7 +876,8 @@ def login_duolingo(page):
 def main():
     with sync_playwright() as p:
 
-        browser = p.chromium.launch(headless=False)
+        headless = os.getenv("HEADLESS", "false").lower() == "true"
+        browser = p.chromium.launch(headless=headless)
 
         if os.path.exists(SESSION_FILE):
             print("Loading saved session...")
@@ -903,6 +906,7 @@ def main():
         consecutive_no_question = 0
         question_count = 0
         wrong_count = 0  # Track deliberate wrong answers per lesson
+        lesson_count = 0
 
         while True:
             try:
@@ -960,6 +964,13 @@ def main():
                             human_sleep(1.5, 3.0)
 
                         # Start next lesson
+                        lesson_count += 1
+                        print(f"  📊 Lessons completed: {lesson_count}")
+
+                        if MAX_LESSONS > 0 and lesson_count >= MAX_LESSONS:
+                            print(f"\n🎉 Completed {lesson_count} lessons. Done!")
+                            break
+
                         start_lesson(page)
                         consecutive_no_question = 0
                         wrong_count = 0  # Reset for new lesson
