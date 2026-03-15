@@ -984,6 +984,7 @@ def login_duolingo_api(context):
     """Login via Duolingo API (bypasses reCAPTCHA) and inject cookies into browser."""
     import urllib.request
     import urllib.error
+    import http.cookiejar
 
     url = "https://www.duolingo.com/login"
     payload = json.dumps({"identifier": EMAIL, "password": PASSWORD}).encode()
@@ -992,54 +993,55 @@ def login_duolingo_api(context):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     }
 
+    # Use CookieJar to properly capture all Set-Cookie headers
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req) as resp:
-            body = json.loads(resp.read().decode())
-            # Extract auth token from response headers
-            set_cookie = resp.headers.get("Set-Cookie", "")
-            print(f"  API login successful (username: {body.get('username', '?')})")
+        resp = opener.open(req)
+        body = json.loads(resp.read().decode())
+        print(f"  API login successful (username: {body.get('username', '?')})")
     except urllib.error.HTTPError as e:
         error_body = e.read().decode() if e.readable() else ""
         raise Exception(f"API login failed (HTTP {e.code}): {error_body}")
 
-    # Parse cookies from Set-Cookie header and add to browser context
+    # Convert CookieJar cookies to Playwright format
     cookies = []
-    for cookie_str in set_cookie.split(","):
-        cookie_str = cookie_str.strip()
-        if "=" not in cookie_str:
-            continue
-        # Only take the name=value part (before first ;)
-        name_value = cookie_str.split(";")[0].strip()
-        if "=" not in name_value:
-            continue
-        name, value = name_value.split("=", 1)
-        name = name.strip()
-        # Skip cookie attributes that look like names
-        if name.lower() in ("path", "domain", "expires", "max-age", "samesite", "secure", "httponly"):
-            continue
-        if not value.strip():
-            continue
+    for cookie in cookie_jar:
         cookies.append({
-            "name": name,
-            "value": value,
+            "name": cookie.name,
+            "value": cookie.value,
+            "domain": cookie.domain or ".duolingo.com",
+            "path": cookie.path or "/",
+        })
+
+    # Check for jwt in response headers
+    jwt_header = resp.headers.get("jwt")
+    if jwt_header:
+        cookies.append({
+            "name": "jwt_token",
+            "value": jwt_header,
             "domain": ".duolingo.com",
             "path": "/",
         })
-
-    if cookies:
-        context.add_cookies(cookies)
-        print(f"  Injected {len(cookies)} cookies into browser")
+        print("  Injected JWT from response header")
 
     # Also try to get jwt token from response body
-    if "jwt" in body:
-        context.add_cookies([{
+    if body.get("jwt"):
+        cookies.append({
             "name": "jwt_token",
             "value": body["jwt"],
             "domain": ".duolingo.com",
             "path": "/",
-        }])
-        print("  Injected JWT token")
+        })
+        print("  Injected JWT token from response body")
+
+    if cookies:
+        context.add_cookies(cookies)
+        print(f"  Injected {len(cookies)} cookies into browser")
+    else:
+        print("  ⚠ WARNING: No cookies captured from login response!")
 
     return body
 
@@ -1184,17 +1186,28 @@ def main():
                 login_duolingo_api(context)
             else:
                 login_duolingo(page)
-            print("Saving session...")
-            context.storage_state(path=SESSION_FILE)
 
         page.goto("https://www.duolingo.com/learn")
         page.wait_for_load_state("domcontentloaded")
         page.wait_for_timeout(5000)
 
+        # Save session AFTER page loads (so localStorage/cookies are fully set)
+        if not os.path.exists(SESSION_FILE):
+            print("Saving session...")
+            context.storage_state(path=SESSION_FILE)
+
         # Verify we're logged in (not redirected to login page)
         current_url = page.url
         print(f"Current URL after navigation: {current_url}")
-        if "/log-in" in current_url or "/login" in current_url or "/register" in current_url or "isLoggingIn" in current_url:
+        # Detect login failure: redirected to root, login page, or register page
+        is_not_logged_in = (
+            current_url.rstrip("/") == "https://www.duolingo.com"
+            or "/log-in" in current_url
+            or "/login" in current_url
+            or "/register" in current_url
+            or "isLoggingIn" in current_url
+        )
+        if is_not_logged_in:
             print("⚠ Session expired or invalid, logging in again...")
             # Delete stale session
             if os.path.exists(SESSION_FILE):
@@ -1208,8 +1221,14 @@ def main():
             page.wait_for_load_state("domcontentloaded")
             page.wait_for_timeout(5000)
             # Final check
-            if "/log-in" in page.url or "/login" in page.url or "isLoggingIn" in page.url:
-                raise Exception(f"Login failed. Current URL: {page.url}")
+            final_url = page.url
+            if (
+                final_url.rstrip("/") == "https://www.duolingo.com"
+                or "/log-in" in final_url
+                or "/login" in final_url
+                or "isLoggingIn" in final_url
+            ):
+                raise Exception(f"Login failed. Current URL: {final_url}")
 
         # Check XP before starting
         print("\n📊 Checking XP before practice...")
@@ -1255,6 +1274,24 @@ def main():
                 if q_type == "no_question":
                     consecutive_no_question += 1
                     print("  No question detected, waiting...")
+
+                    # Detect if we're stuck on a login screen (not a real lesson)
+                    q_lower = question.lower()
+                    if any(kw in q_lower for kw in ["log in", "login", "sign in", "sign up", "create account"]):
+                        print("  ⚠ Login/signup screen detected! Session may be invalid.")
+                        # Try to re-login
+                        if os.path.exists(SESSION_FILE):
+                            os.remove(SESSION_FILE)
+                        if headless:
+                            login_duolingo_api(context)
+                        else:
+                            login_duolingo(page)
+                        page.goto("https://www.duolingo.com/learn")
+                        page.wait_for_load_state("domcontentloaded")
+                        page.wait_for_timeout(5000)
+                        context.storage_state(path=SESSION_FILE)
+                        consecutive_no_question = 0
+                        continue
 
                     # Check if out of hearts → switch to practice
                     if check_no_hearts(page):

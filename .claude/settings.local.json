@@ -5,8 +5,14 @@
       "Edit(*)",
       "Read(*)",
       "Write(*)",
-      "WebSearch",
-      "WebFetch(*)"
+      "Glob(*)",
+      "Grep(*)",
+      "WebSearch(*)",
+      "WebFetch(*)",
+      "Agent(*)",
+      "TodoWrite(*)",
+      "NotebookEdit(*)",
+      "mcp__*"
     ]
   }
 }
