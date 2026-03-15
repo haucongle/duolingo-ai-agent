@@ -97,16 +97,38 @@ The agent will log in, check XP, and start completing lessons automatically.
 | `OPENAI_API_KEY` | OpenAI API key | Required |
 | `DUO_EMAIL` | Duolingo email | Required |
 | `DUO_PASSWORD` | Duolingo password | Required |
+| `DUO_JWT` | Pre-authenticated JWT token (recommended for CI) | Optional |
 | `DUO_PROFILE_URL` | Duolingo username (for XP tracking) | Optional |
 | `MAX_LESSONS` | Number of lessons to complete (0 = unlimited) | `0` |
 | `HEADLESS` | Run browser without UI (`true`/`false`) | `false` |
 
 Press **Ctrl+C** at any time to stop and see your XP summary.
 
+### Getting Your JWT Token
+
+Duolingo's login API may block automated requests (reCAPTCHA, rate limits). The most reliable way to authenticate in CI is using a JWT token from your browser session.
+
+1. Log in to [Duolingo](https://www.duolingo.com/) in your browser
+2. Open the browser DevTools console (F12 → Console)
+3. Run this script to copy your JWT token:
+
+```js
+document.cookie.split(';').find(cookie => cookie.includes('jwt_token')).split('=')[1]
+```
+
+4. Copy the output — that's your JWT token
+
+> **Note:** JWT tokens expire periodically. If the agent stops working, repeat the steps above to get a fresh token.
+
 ### GitHub Actions (Daily Automated Practice)
 
 1. Go to your repo **Settings > Secrets and variables > Actions**
-2. Add these secrets: `DUO_EMAIL`, `DUO_PASSWORD`, `OPENAI_API_KEY`, `DUO_PROFILE_URL`
+2. Add these secrets:
+   - `DUO_EMAIL` — your Duolingo email
+   - `DUO_PASSWORD` — your Duolingo password
+   - `DUO_JWT` — your JWT token (recommended, see [Getting Your JWT Token](#getting-your-jwt-token))
+   - `OPENAI_API_KEY` — your OpenAI API key
+   - `DUO_PROFILE_URL` — your Duolingo username (optional, for XP tracking)
 3. The workflow runs daily at 7:00 AM UTC, or trigger manually from the **Actions** tab
 4. Adjust `max_lessons` when triggering manually (default: 3)
 
