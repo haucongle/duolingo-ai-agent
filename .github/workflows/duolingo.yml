@@ -71,3 +71,12 @@ jobs:
             stuck_debug.png
           retention-days: 3
           if-no-files-found: ignore
+
+      - name: Save Playwright recordings
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-recordings
+          path: playwright-videos/
+          retention-days: 3
+          if-no-files-found: ignore

@@ -1147,18 +1147,25 @@ def main():
 
         ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
+        video_dir = os.path.join(os.getcwd(), "playwright-videos")
+        os.makedirs(video_dir, exist_ok=True)
+
         if os.path.exists(SESSION_FILE):
             print("Loading saved session...")
             context = browser.new_context(
                 viewport={"width": 1280, "height": 800},
                 storage_state=SESSION_FILE,
                 user_agent=ua,
+                record_video_dir=video_dir,
+                record_video_size={"width": 1280, "height": 800},
             )
         else:
             print("No session found → logging in")
             context = browser.new_context(
                 viewport={"width": 1280, "height": 800},
                 user_agent=ua,
+                record_video_dir=video_dir,
+                record_video_size={"width": 1280, "height": 800},
             )
 
         page = context.new_page()
