@@ -34,6 +34,7 @@ jobs:
         env:
           DUO_EMAIL: ${{ secrets.DUO_EMAIL }}
           DUO_PASSWORD: ${{ secrets.DUO_PASSWORD }}
+          DUO_JWT: ${{ secrets.DUO_JWT }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DUO_PROFILE_URL: ${{ secrets.DUO_PROFILE_URL }}
           HEADLESS: 'true'
