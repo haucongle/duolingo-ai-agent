@@ -788,11 +788,27 @@ def click_start_xp_button(page):
         return False
 
 
+def check_no_hearts(page):
+    """Check if the 'You need hearts' popup is showing. Returns True if out of hearts."""
+    try:
+        body_text = page.inner_text("body", timeout=1000)
+        if "You need hearts" in body_text or "need hearts to start" in body_text:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def start_lesson(page):
     """Auto-detect and start the next available lesson."""
 
     print("Looking for a lesson to start...")
     human_sleep(1.0, 2.0)
+
+    # Check if out of hearts
+    if check_no_hearts(page):
+        print("  💔 Out of hearts! Cannot start new lessons. Exiting...")
+        raise SystemExit(0)
 
     # Step 1: Click the "START" label above the active lesson icon
     start_texts = ["START", "Start", "BẮT ĐẦU", "Bắt đầu"]
@@ -852,6 +868,75 @@ def start_lesson(page):
     return True
 
 
+_profile_raw = os.getenv("DUO_PROFILE_URL", "")
+PROFILE_URL = (
+    _profile_raw if _profile_raw.startswith("http")
+    else f"https://www.duolingo.com/profile/{_profile_raw}" if _profile_raw
+    else ""
+)
+
+
+def get_xp(page):
+    """Get current user XP by navigating to profile page and reading stats."""
+    try:
+        # Find profile URL from the page if not set
+        profile_url = PROFILE_URL
+        if not profile_url:
+            # Try clicking profile link to find username
+            try:
+                profile_link = page.locator('a[href*="/profile/"]').first
+                profile_url = "https://www.duolingo.com" + profile_link.get_attribute("href", timeout=2000)
+            except Exception:
+                # Fallback: navigate to profile via sidebar
+                profile_url = "https://www.duolingo.com/profile"
+
+        # Save current URL to return later
+        current_url = page.url
+
+        page.goto(profile_url)
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(3000)
+        human_sleep(1.0, 2.0)
+
+        # Scrape stats from profile page
+        xp = 0
+        streak = 0
+
+        # XP is usually shown as "XXX XP" on profile
+        page_text = page.inner_text("body")
+
+        # Match patterns like "213 XP" or "1,234 XP"
+        xp_match = re.search(r'([\d,]+)\s*XP', page_text)
+        if xp_match:
+            xp = int(xp_match.group(1).replace(",", ""))
+
+        # Match streak like "1 day streak" or "5 day streak"
+        streak_match = re.search(r'(\d+)\s*day\s*streak', page_text, re.IGNORECASE)
+        if streak_match:
+            streak = int(streak_match.group(1))
+
+        # Go back to previous page
+        page.goto(current_url)
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(3000)
+
+        return {"totalXp": xp, "streak": streak}
+
+    except Exception as e:
+        print(f"  ⚠ Could not fetch XP: {e}")
+        return None
+
+
+def print_xp_summary(label, xp_data):
+    """Print XP summary."""
+    if not xp_data:
+        print(f"  {label}: Could not retrieve XP data")
+        return
+    print(f"  {label}:")
+    print(f"    Total XP: {xp_data['totalXp']}")
+    print(f"    Streak: {xp_data['streak']} days")
+
+
 def login_duolingo(page):
     page.goto("https://www.duolingo.com/log-in")
     page.wait_for_load_state("domcontentloaded")
@@ -898,7 +983,13 @@ def main():
             context.storage_state(path=SESSION_FILE)
 
         page.goto("https://www.duolingo.com/learn")
-        page.wait_for_load_state("networkidle")
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(3000)
+
+        # Check XP before starting
+        print("\n📊 Checking XP before practice...")
+        xp_before = get_xp(page)
+        print_xp_summary("Before", xp_before)
 
         # Auto-start lesson
         start_lesson(page)
@@ -932,6 +1023,11 @@ def main():
                     consecutive_no_question += 1
                     print("  No question detected, waiting...")
 
+                    # Check if out of hearts
+                    if check_no_hearts(page):
+                        print("  💔 Out of hearts! Stopping...")
+                        break
+
                     # Check if lesson is complete (URL changed back to /learn)
                     current_url = page.url
                     is_on_learn_page = "/learn" in current_url and "/lesson" not in current_url
@@ -960,7 +1056,8 @@ def main():
                         # Navigate to learn page if not already there
                         if not is_on_learn_page:
                             page.goto("https://www.duolingo.com/learn")
-                            page.wait_for_load_state("networkidle")
+                            page.wait_for_load_state("domcontentloaded")
+                            page.wait_for_timeout(3000)
                             human_sleep(1.5, 3.0)
 
                         # Start next lesson
@@ -968,7 +1065,16 @@ def main():
                         print(f"  📊 Lessons completed: {lesson_count}")
 
                         if MAX_LESSONS > 0 and lesson_count >= MAX_LESSONS:
+                            # Final XP check
+                            page.goto("https://www.duolingo.com/learn")
+                            page.wait_for_load_state("domcontentloaded")
+                            page.wait_for_timeout(3000)
+                            xp_after = get_xp(page)
                             print(f"\n🎉 Completed {lesson_count} lessons. Done!")
+                            print_xp_summary("After", xp_after)
+                            if xp_before and xp_after:
+                                gained = xp_after['totalXp'] - xp_before['totalXp']
+                                print(f"  ⚡ XP gained this session: +{gained}")
                             break
 
                         start_lesson(page)
@@ -1039,6 +1145,17 @@ def main():
 
             except KeyboardInterrupt:
                 print(f"\nStopped by user after {question_count} questions")
+                try:
+                    page.goto("https://www.duolingo.com/learn")
+                    page.wait_for_load_state("domcontentloaded")
+                    page.wait_for_timeout(3000)
+                    xp_after = get_xp(page)
+                    print_xp_summary("After", xp_after)
+                    if xp_before and xp_after:
+                        gained = xp_after['totalXp'] - xp_before['totalXp']
+                        print(f"  ⚡ XP gained this session: +{gained}")
+                except Exception:
+                    pass
                 break
 
             except Exception as e:

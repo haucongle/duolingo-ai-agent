@@ -35,6 +35,7 @@ jobs:
           DUO_EMAIL: ${{ secrets.DUO_EMAIL }}
           DUO_PASSWORD: ${{ secrets.DUO_PASSWORD }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DUO_PROFILE_URL: ${{ secrets.DUO_PROFILE_URL }}
           HEADLESS: 'true'
           MAX_LESSONS: ${{ github.event.inputs.max_lessons || '3' }}
         run: python duolingo_cn_for_en.py
