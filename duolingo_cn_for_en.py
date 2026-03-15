@@ -981,46 +981,84 @@ def print_xp_summary(label, xp_data):
 
 
 def login_duolingo(page):
-    page.goto("https://www.duolingo.com/?isLoggingIn=true")
-    page.wait_for_load_state("domcontentloaded")
-    page.wait_for_timeout(3000)
-
-    # Try multiple selectors for email/password fields
-    email_selectors = [
-        '#web-ui1',
-        'input[data-test="email-input"]',
-        'input[name="identifier"]',
-        'input[type="email"]',
-        'input[type="text"]',
-    ]
-    password_selectors = [
-        '#web-ui2',
-        'input[data-test="password-input"]',
-        'input[name="password"]',
-        'input[type="password"]',
+    # Try the direct login page first, fall back to homepage + click
+    login_urls = [
+        "https://www.duolingo.com/log-in",
+        "https://www.duolingo.com/?isLoggingIn=true",
     ]
 
-    email_input = None
-    for sel in email_selectors:
-        try:
-            loc = page.locator(sel).first
-            loc.wait_for(timeout=3000)
-            email_input = loc
-            print(f"  Found email input: {sel}")
-            break
-        except Exception:
-            continue
+    for login_url in login_urls:
+        page.goto(login_url)
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(3000)
 
-    password_input = None
-    for sel in password_selectors:
-        try:
-            loc = page.locator(sel).first
-            loc.wait_for(timeout=3000)
-            password_input = loc
-            print(f"  Found password input: {sel}")
-            break
-        except Exception:
-            continue
+        # If on homepage, try clicking sign-in buttons to open login modal
+        sign_in_selectors = [
+            'button:has-text("I ALREADY HAVE AN ACCOUNT")',
+            'button:has-text("I already have an account")',
+            'a:has-text("I ALREADY HAVE AN ACCOUNT")',
+            'a:has-text("I already have an account")',
+            'button:has-text("SIGN IN")',
+            'button:has-text("Sign in")',
+            'a:has-text("SIGN IN")',
+            'a:has-text("Sign in")',
+            'button:has-text("LOG IN")',
+            'button:has-text("Log in")',
+            'a:has-text("LOG IN")',
+        ]
+        for sel in sign_in_selectors:
+            try:
+                btn = page.locator(sel).first
+                if btn.is_visible(timeout=2000):
+                    btn.click()
+                    print(f"  Clicked: {sel}")
+                    page.wait_for_timeout(2000)
+                    break
+            except Exception:
+                continue
+
+        # Now look for login form fields
+        email_input = None
+        password_input = None
+
+        email_selectors = [
+            '#web-ui1',
+            'input[data-test="email-input"]',
+            'input[name="identifier"]',
+            'input[type="email"]',
+            'input[type="text"]',
+        ]
+        password_selectors = [
+            '#web-ui2',
+            'input[data-test="password-input"]',
+            'input[name="password"]',
+            'input[type="password"]',
+        ]
+
+        for sel in email_selectors:
+            try:
+                loc = page.locator(sel).first
+                loc.wait_for(timeout=3000)
+                email_input = loc
+                print(f"  Found email input: {sel}")
+                break
+            except Exception:
+                continue
+
+        for sel in password_selectors:
+            try:
+                loc = page.locator(sel).first
+                loc.wait_for(timeout=3000)
+                password_input = loc
+                print(f"  Found password input: {sel}")
+                break
+            except Exception:
+                continue
+
+        if email_input and password_input:
+            break  # Found the form, proceed
+        else:
+            print(f"  Login form not found at {login_url}, trying next...")
 
     if not email_input or not password_input:
         # Take screenshot for debugging
