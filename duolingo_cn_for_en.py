@@ -6,7 +6,6 @@ import re
 import tempfile
 import time
 import traceback
-from pathlib import Path
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 from openai import OpenAI
@@ -981,118 +980,8 @@ def print_xp_summary(label, xp_data):
     print(f"    Streak: {xp_data['streak']} days")
 
 
-def login_duolingo_api(context):
-    """Login via Duolingo API (bypasses reCAPTCHA) and inject cookies into browser."""
-    import urllib.request
-    import urllib.error
-    import http.cookiejar
-
-    url = "https://www.duolingo.com/login"
-    payload = json.dumps({"identifier": EMAIL, "password": PASSWORD}).encode()
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    }
-
-    # Use CookieJar to properly capture all Set-Cookie headers
-    cookie_jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
-
-    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-    try:
-        resp = opener.open(req)
-        body = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode() if e.readable() else ""
-        raise Exception(f"API login failed (HTTP {e.code}): {error_body}")
-
-    # Debug: show response info to diagnose auth issues
-    print(f"  [DEBUG] Response body keys: {list(body.keys())}")
-    print(f"  [DEBUG] Response header names: {[h for h in resp.headers.keys()]}")
-
-    # Check if login actually succeeded (Duolingo returns 200 even on failure)
-    if "failure" in body or "message" in body and "username" not in body:
-        failure_msg = body.get("failure", body.get("message", "unknown"))
-        raise Exception(f"API login rejected: {failure_msg}")
-
-    print(f"  API login successful (username: {body.get('username', '?')})")
-
-    # Convert CookieJar cookies to Playwright format
-    cookies = []
-    for cookie in cookie_jar:
-        print(f"  [DEBUG] CookieJar cookie: {cookie.name} (domain={cookie.domain})")
-        cookies.append({
-            "name": cookie.name,
-            "value": cookie.value,
-            "domain": cookie.domain or ".duolingo.com",
-            "path": cookie.path or "/",
-        })
-
-    # Also parse Set-Cookie headers directly (CookieJar may filter some)
-    raw_set_cookies = resp.headers.get_all("Set-Cookie") or []
-    print(f"  [DEBUG] Raw Set-Cookie count: {len(raw_set_cookies)}")
-    for sc in raw_set_cookies:
-        # Extract name=value before first ;
-        nv = sc.split(";")[0].strip()
-        if "=" in nv:
-            name, value = nv.split("=", 1)
-            name = name.strip()
-            if name.lower() not in ("path", "domain", "expires", "max-age", "samesite", "secure", "httponly"):
-                # Check if already captured by CookieJar
-                if not any(c["name"] == name for c in cookies):
-                    print(f"  [DEBUG] Extra cookie from header: {name}")
-                    cookies.append({
-                        "name": name,
-                        "value": value,
-                        "domain": ".duolingo.com",
-                        "path": "/",
-                    })
-
-    # Check for jwt in response headers (Duolingo sometimes returns it as a header)
-    jwt_header = resp.headers.get("jwt")
-    if jwt_header:
-        cookies.append({
-            "name": "jwt_token",
-            "value": jwt_header,
-            "domain": ".duolingo.com",
-            "path": "/",
-        })
-        print("  Injected JWT from response header")
-
-    # Try to get jwt token from response body
-    if body.get("jwt"):
-        cookies.append({
-            "name": "jwt_token",
-            "value": body["jwt"],
-            "domain": ".duolingo.com",
-            "path": "/",
-        })
-        print("  Injected JWT token from response body")
-
-    # Also check for auth_token or token in body
-    for key in ("auth_token", "token", "access_token"):
-        if body.get(key):
-            cookies.append({
-                "name": "jwt_token",
-                "value": body[key],
-                "domain": ".duolingo.com",
-                "path": "/",
-            })
-            print(f"  Injected token from body['{key}']")
-            break
-
-    if cookies:
-        context.add_cookies(cookies)
-        print(f"  Injected {len(cookies)} cookies into browser")
-        print(f"  [DEBUG] Cookie names: {[c['name'] for c in cookies]}")
-    else:
-        print("  ⚠ WARNING: No cookies captured from login response!")
-
-    return body
-
-
 def login_with_jwt(context, page):
-    """Login by injecting a pre-authenticated JWT token directly."""
+    """Login by injecting a pre-authenticated JWT token directly (best for CI)."""
     if not DUO_JWT:
         return False
     print("  Using DUO_JWT token for authentication...")
@@ -1115,12 +1004,10 @@ def login_with_jwt(context, page):
 def login_duolingo_via_browser(page):
     """Login via the browser's fetch API — cookies are set directly in the browser context."""
     print("  Using browser-based API login...")
-    # Navigate to Duolingo first so cookies are set on the correct domain
     page.goto("https://www.duolingo.com/")
     page.wait_for_load_state("domcontentloaded")
     page.wait_for_timeout(2000)
 
-    # Call the login API from within the browser page
     result = page.evaluate("""async ([email, password]) => {
         try {
             const resp = await fetch('https://www.duolingo.com/login', {
@@ -1131,32 +1018,26 @@ def login_duolingo_via_browser(page):
             });
             const body = await resp.json();
             return {ok: resp.ok, status: resp.status, username: body.username || null,
-                    failure: body.failure || null, message: body.message || null,
-                    keys: Object.keys(body)};
+                    failure: body.failure || null, message: body.message || null};
         } catch(e) {
             return {ok: false, error: e.message};
         }
     }""", [EMAIL, PASSWORD])
 
-    print(f"  Browser API login result: {result}")
     if not result.get("ok"):
         raise Exception(f"Browser API login failed: {result}")
     if result.get("failure") or (result.get("message") and not result.get("username")):
         raise Exception(f"Browser API login rejected: {result.get('failure') or result.get('message')}")
 
-    # Cookies are now set in the browser automatically via fetch credentials: 'include'
-    # Navigate to learn page to verify
+    print(f"  Browser API login successful (username: {result.get('username')})")
     page.goto("https://www.duolingo.com/learn")
     page.wait_for_load_state("domcontentloaded")
     page.wait_for_timeout(3000)
 
-    final_url = page.url
-    if final_url.rstrip("/") != "https://www.duolingo.com" and "/learn" in final_url:
-        print(f"  Browser API login successful! URL: {final_url}")
+    if "/learn" in page.url:
         return True
-    else:
-        print(f"  Browser API login did not redirect to /learn. URL: {final_url}")
-        return False
+    print(f"  Browser API login did not reach /learn. URL: {page.url}")
+    return False
 
 
 def login_duolingo(page):
@@ -1297,35 +1178,22 @@ def main():
             return "/learn" in url and "/login" not in url
 
         def do_login():
-            """Try multiple login methods in order."""
-            # Method 0: JWT token (fastest, most reliable for CI)
+            """Try login methods: JWT → browser fetch API → web form."""
+            # JWT token (fastest, most reliable for CI)
             try:
                 if login_with_jwt(context, page):
                     return True
             except Exception as e:
                 print(f"  JWT login failed: {e}")
 
-            # Method 1: Browser-based fetch login (cookies set directly in browser)
+            # Browser-based fetch login
             try:
                 if login_duolingo_via_browser(page):
                     return True
             except Exception as e:
                 print(f"  Browser API login failed: {e}")
 
-            # Method 2: urllib API login + cookie injection
-            if headless:
-                try:
-                    print("  Falling back to urllib API login...")
-                    login_duolingo_api(context)
-                    page.goto("https://www.duolingo.com/learn")
-                    page.wait_for_load_state("domcontentloaded")
-                    page.wait_for_timeout(5000)
-                    if is_logged_in_url(page.url):
-                        return True
-                except Exception as e:
-                    print(f"  urllib API login failed: {e}")
-
-            # Method 3: Web form login (non-headless only)
+            # Web form login (non-headless only)
             if not headless:
                 print("  Falling back to web form login...")
                 login_duolingo(page)
@@ -1394,7 +1262,6 @@ def main():
                 question = result.get("question", "")
                 answer = result.get("answer", "")
 
-
                 print(f"  Type: {q_type}")
                 print(f"  Question: {question}")
                 print(f"  Answer: {answer}")
@@ -1407,16 +1274,10 @@ def main():
                     q_lower = question.lower()
                     if any(kw in q_lower for kw in ["log in", "login", "sign in", "sign up", "create account"]):
                         print("  ⚠ Login/signup screen detected! Session may be invalid.")
-                        # Try to re-login
                         if os.path.exists(SESSION_FILE):
                             os.remove(SESSION_FILE)
-                        if headless:
-                            login_duolingo_api(context)
-                        else:
-                            login_duolingo(page)
-                        page.goto("https://www.duolingo.com/learn")
-                        page.wait_for_load_state("domcontentloaded")
-                        page.wait_for_timeout(5000)
+                        if not do_login():
+                            raise Exception("Re-login failed after detecting login screen")
                         context.storage_state(path=SESSION_FILE)
                         consecutive_no_question = 0
                         continue
