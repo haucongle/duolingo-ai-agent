@@ -928,6 +928,10 @@ def main():
                     consecutive_no_question += 1
                     print("  No question detected, waiting...")
 
+                    # Check if lesson is complete (URL changed back to /learn)
+                    current_url = page.url
+                    is_on_learn_page = "/learn" in current_url and "/lesson" not in current_url
+
                     # Try clicking continue/next in case we're on a result screen
                     click_button(
                         page,
@@ -942,14 +946,25 @@ def main():
                         ],
                     )
 
-                    if consecutive_no_question >= 5:
-                        print("  Lesson might be done. Starting next lesson...")
-                        page.goto("https://www.duolingo.com/learn")
-                        page.wait_for_load_state("networkidle")
-                        human_sleep(1.5, 3.0)
+                    if is_on_learn_page or consecutive_no_question >= 3:
+                        if is_on_learn_page:
+                            print("  ✅ Lesson complete! (back on learn page)")
+                        else:
+                            print("  ✅ Lesson seems done. Starting next lesson...")
+                        human_sleep(2.0, 4.0)
+
+                        # Navigate to learn page if not already there
+                        if not is_on_learn_page:
+                            page.goto("https://www.duolingo.com/learn")
+                            page.wait_for_load_state("networkidle")
+                            human_sleep(1.5, 3.0)
+
+                        # Start next lesson
                         start_lesson(page)
                         consecutive_no_question = 0
                         wrong_count = 0  # Reset for new lesson
+                        question_count = 0
+                        print("\n🆕 New lesson started!")
 
                     human_sleep(1.5, 3.0)
                     continue
