@@ -6,15 +6,15 @@ on:
     - cron: '0 7 * * *'
   workflow_dispatch:
     inputs:
-      max_lessons:
-        description: 'Number of lessons to complete'
+      rounds:
+        description: 'Number of practice rounds'
         required: false
         default: '3'
 
 jobs:
   practice:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 360
 
     steps:
       - uses: actions/checkout@v5
@@ -30,7 +30,7 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
-      - name: Run Duolingo Agent
+      - name: Run practice rounds
         env:
           DUO_EMAIL: ${{ secrets.DUO_EMAIL }}
           DUO_PASSWORD: ${{ secrets.DUO_PASSWORD }}
@@ -38,8 +38,23 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DUO_PROFILE_URL: ${{ secrets.DUO_PROFILE_URL }}
           HEADLESS: 'true'
-          MAX_LESSONS: ${{ github.event.inputs.max_lessons || '3' }}
-        run: python duolingo_cn_for_en.py
+          ROUNDS: ${{ github.event.inputs.rounds || '3' }}
+        run: |
+          for i in $(seq 1 $ROUNDS); do
+            LESSONS=$((RANDOM % 16 + 5))
+            echo ""
+            echo "========================================="
+            echo "🔄 Round $i/$ROUNDS — $LESSONS lessons"
+            echo "========================================="
+            MAX_LESSONS=$LESSONS python duolingo_cn_for_en.py || true
+
+            if [ "$i" -lt "$ROUNDS" ]; then
+              SLEEP_MIN=$((RANDOM % 61 + 60))
+              echo ""
+              echo "😴 Sleeping ${SLEEP_MIN} minutes before next round..."
+              sleep $((SLEEP_MIN * 60))
+            fi
+          done
 
       - name: Save session for next run
         if: always()
