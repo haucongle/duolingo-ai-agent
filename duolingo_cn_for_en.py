@@ -828,7 +828,7 @@ def start_practice_mode(page):
     print("  🏋️ Starting practice mode (free, no hearts needed)...")
     page.goto("https://www.duolingo.com/practice")
     page.wait_for_load_state("domcontentloaded")
-    page.wait_for_timeout(3000)
+    page.wait_for_timeout(1500)
     return True
 
 
@@ -930,11 +930,8 @@ def get_xp(page):
         # Save current URL to return later
         current_url = page.url
 
-        # Force no-cache reload to get fresh data
         page.goto(profile_url, wait_until="domcontentloaded")
-        page.evaluate("() => location.reload(true)")
-        page.wait_for_load_state("domcontentloaded")
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(2000)
 
         # Scrape stats from profile page
         xp = 0
@@ -961,7 +958,7 @@ def get_xp(page):
         # Go back to previous page
         page.goto(current_url)
         page.wait_for_load_state("domcontentloaded")
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(1500)
 
         return {"totalXp": xp, "streak": streak}
 
@@ -993,7 +990,7 @@ def login_with_jwt(context, page):
     }])
     page.goto("https://www.duolingo.com/learn")
     page.wait_for_load_state("domcontentloaded")
-    page.wait_for_timeout(5000)
+    page.wait_for_timeout(3000)
     if "/learn" in page.url:
         print(f"  JWT login successful! URL: {page.url}")
         return True
@@ -1207,7 +1204,7 @@ def main():
         else:
             page.goto("https://www.duolingo.com/learn")
             page.wait_for_load_state("domcontentloaded")
-            page.wait_for_timeout(5000)
+            page.wait_for_timeout(3000)
 
         # Save session AFTER page loads (so localStorage/cookies are fully set)
         if not os.path.exists(SESSION_FILE):
@@ -1235,8 +1232,10 @@ def main():
         hearts = get_hearts(page)
         if hearts >= 0:
             print(f"  ❤️ Hearts: {hearts}/5")
+        in_practice_mode = False
         if 0 <= hearts < 5:
             start_practice_mode(page)
+            in_practice_mode = True
         else:
             start_lesson(page)
 
@@ -1288,6 +1287,7 @@ def main():
                         click_button(page, ["NO THANKS", "No thanks", "CLOSE", "Close", "✕"])
                         human_sleep(0.5, 1.0)
                         start_practice_mode(page)
+                        in_practice_mode = True
                         consecutive_no_question = 0
                         continue
 
@@ -1301,38 +1301,33 @@ def main():
                         ["Continue", "CONTINUE", "Next", "START", "Start"],
                     )
 
-                    if is_on_learn_page or consecutive_no_question >= 3:
+                    # If stuck with no questions answered, something is wrong
+                    if consecutive_no_question >= 5 and question_count == 0:
+                        print("  ⚠ Stuck: no questions detected after 5 attempts. Taking screenshot...")
+                        try:
+                            page.screenshot(path="stuck_debug.png")
+                        except Exception:
+                            pass
+                        raise Exception(f"No questions found. URL: {page.url}")
+
+                    if is_on_learn_page or (consecutive_no_question >= 3 and question_count > 0):
                         if is_on_learn_page:
                             print("  ✅ Lesson complete! (back on learn page)")
                         else:
                             print("  ✅ Lesson seems done. Starting next lesson...")
-                        human_sleep(0.5, 1.5)
 
                         # Navigate to learn page if not already there
                         if not is_on_learn_page:
                             page.goto("https://www.duolingo.com/learn")
                             page.wait_for_load_state("domcontentloaded")
-                            page.wait_for_timeout(3000)
-                            human_sleep(0.3, 1.0)
+                            page.wait_for_timeout(1500)
 
                         # Start next lesson
                         lesson_count += 1
-                        # Update XP tracking
-                        try:
-                            xp_after = get_xp(page)
-                            if xp_before and xp_after:
-                                gained = xp_after['totalXp'] - xp_before['totalXp']
-                                print(f"  📊 Lessons completed: {lesson_count} | XP gained: +{gained}")
-                            else:
-                                print(f"  📊 Lessons completed: {lesson_count}")
-                        except Exception:
-                            print(f"  📊 Lessons completed: {lesson_count}")
+                        print(f"  📊 Lessons completed: {lesson_count}")
 
                         if MAX_LESSONS > 0 and lesson_count >= MAX_LESSONS:
                             # Final XP check
-                            page.goto("https://www.duolingo.com/learn")
-                            page.wait_for_load_state("domcontentloaded")
-                            page.wait_for_timeout(3000)
                             xp_after = get_xp(page)
                             print(f"\n🎉 Completed {lesson_count} lessons. Done!")
                             print_xp_summary("After", xp_after)
@@ -1347,8 +1342,10 @@ def main():
                             print(f"  ❤️ Hearts: {hearts}/5")
                         if 0 <= hearts < 5:
                             start_practice_mode(page)
+                            in_practice_mode = True
                         else:
                             start_lesson(page)
+                            in_practice_mode = False
                         consecutive_no_question = 0
                         wrong_count = 0
                         MAX_WRONG_PER_LESSON = random.randint(0, 2)  # Randomize for new lesson
@@ -1373,10 +1370,10 @@ def main():
                     continue
 
                 # Decide if we should answer wrong (for human simulation)
-                # Don't make more mistakes if we've hit the limit
-                # Never deliberately wrong on matching/tap_pairs (too complex)
+                # Never in practice mode, never on matching/tap_pairs
                 force_wrong = (
-                    wrong_count < MAX_WRONG_PER_LESSON
+                    not in_practice_mode
+                    and wrong_count < MAX_WRONG_PER_LESSON
                     and q_type not in ("matching", "tap_pairs")
                     and should_answer_wrong()
                 )

@@ -57,5 +57,6 @@ jobs:
           path: |
             login_debug.png
             login_failed.png
+            stuck_debug.png
           retention-days: 3
           if-no-files-found: ignore
