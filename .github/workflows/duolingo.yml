@@ -47,3 +47,14 @@ jobs:
           name: duo-session
           path: duo_session.json
           retention-days: 7
+
+      - name: Save debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: |
+            login_debug.png
+            login_failed.png
+          retention-days: 3
+          if-no-files-found: ignore

@@ -983,12 +983,53 @@ def print_xp_summary(label, xp_data):
 def login_duolingo(page):
     page.goto("https://www.duolingo.com/log-in")
     page.wait_for_load_state("domcontentloaded")
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(3000)
 
-    email_input = page.locator("#web-ui1")
-    password_input = page.locator("#web-ui2")
+    # Try multiple selectors for email/password fields
+    email_selectors = [
+        '#web-ui1',
+        'input[data-test="email-input"]',
+        'input[name="identifier"]',
+        'input[type="email"]',
+        'input[type="text"]',
+    ]
+    password_selectors = [
+        '#web-ui2',
+        'input[data-test="password-input"]',
+        'input[name="password"]',
+        'input[type="password"]',
+    ]
 
-    email_input.wait_for(timeout=30000)
+    email_input = None
+    for sel in email_selectors:
+        try:
+            loc = page.locator(sel).first
+            loc.wait_for(timeout=3000)
+            email_input = loc
+            print(f"  Found email input: {sel}")
+            break
+        except Exception:
+            continue
+
+    password_input = None
+    for sel in password_selectors:
+        try:
+            loc = page.locator(sel).first
+            loc.wait_for(timeout=3000)
+            password_input = loc
+            print(f"  Found password input: {sel}")
+            break
+        except Exception:
+            continue
+
+    if not email_input or not password_input:
+        # Take screenshot for debugging
+        try:
+            page.screenshot(path="login_debug.png")
+            print("  ⚠ Saved login_debug.png for debugging")
+        except Exception:
+            pass
+        raise Exception(f"Could not find login fields. URL: {page.url}")
 
     human_sleep(0.3, 0.8)
     email_input.fill(EMAIL)
@@ -996,15 +1037,43 @@ def login_duolingo(page):
     password_input.fill(PASSWORD)
     human_sleep(0.5, 1.5)
 
-    page.locator('button:has-text("Log in")').click()
+    # Try multiple selectors for login button
+    login_clicked = False
+    login_btn_selectors = [
+        'button[data-test="register-button"]',
+        'button:has-text("Log in")',
+        'button:has-text("LOG IN")',
+        'button[type="submit"]',
+    ]
+    for sel in login_btn_selectors:
+        try:
+            btn = page.locator(sel).first
+            btn.click(timeout=3000)
+            print(f"  Clicked login button: {sel}")
+            login_clicked = True
+            break
+        except Exception:
+            continue
+
+    if not login_clicked:
+        raise Exception("Could not find login button")
 
     # Wait for redirect to /learn after login
     try:
-        page.wait_for_url("**/learn**", timeout=15000)
+        page.wait_for_url("**/learn**", timeout=30000)
         print("Login successful - redirected to learn page")
     except Exception:
-        page.wait_for_timeout(8000)
-        print(f"Login step done - current URL: {page.url}")
+        page.wait_for_timeout(10000)
+        current_url = page.url
+        print(f"  Login step done - current URL: {current_url}")
+        # Check if we're still on login page
+        if "/log-in" in current_url or "/login" in current_url:
+            try:
+                page.screenshot(path="login_failed.png")
+                print("  ⚠ Saved login_failed.png for debugging")
+            except Exception:
+                pass
+            raise Exception(f"Login failed - still on login page: {current_url}")
 
 
 def main():
@@ -1038,7 +1107,24 @@ def main():
 
         page.goto("https://www.duolingo.com/learn")
         page.wait_for_load_state("domcontentloaded")
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(5000)
+
+        # Verify we're logged in (not redirected to login page)
+        current_url = page.url
+        print(f"Current URL after navigation: {current_url}")
+        if "/log-in" in current_url or "/login" in current_url or "/register" in current_url:
+            print("⚠ Session expired or invalid, logging in again...")
+            # Delete stale session
+            if os.path.exists(SESSION_FILE):
+                os.remove(SESSION_FILE)
+            login_duolingo(page)
+            context.storage_state(path=SESSION_FILE)
+            page.goto("https://www.duolingo.com/learn")
+            page.wait_for_load_state("domcontentloaded")
+            page.wait_for_timeout(5000)
+            # Final check
+            if "/log-in" in page.url or "/login" in page.url:
+                raise Exception(f"Login failed. Current URL: {page.url}")
 
         # Check XP before starting
         print("\n📊 Checking XP before practice...")
