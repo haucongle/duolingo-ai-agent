@@ -980,156 +980,161 @@ def print_xp_summary(label, xp_data):
     print(f"    Streak: {xp_data['streak']} days")
 
 
+def login_duolingo_api(context):
+    """Login via Duolingo API (bypasses reCAPTCHA) and inject cookies into browser."""
+    import urllib.request
+    import urllib.error
+
+    url = "https://www.duolingo.com/login"
+    payload = json.dumps({"identifier": EMAIL, "password": PASSWORD}).encode()
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    }
+
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            body = json.loads(resp.read().decode())
+            # Extract auth token from response headers
+            set_cookie = resp.headers.get("Set-Cookie", "")
+            print(f"  API login successful (username: {body.get('username', '?')})")
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode() if e.readable() else ""
+        raise Exception(f"API login failed (HTTP {e.code}): {error_body}")
+
+    # Parse cookies from Set-Cookie header and add to browser context
+    cookies = []
+    for cookie_str in set_cookie.split(","):
+        cookie_str = cookie_str.strip()
+        if "=" not in cookie_str:
+            continue
+        # Only take the name=value part (before first ;)
+        name_value = cookie_str.split(";")[0].strip()
+        if "=" not in name_value:
+            continue
+        name, value = name_value.split("=", 1)
+        name = name.strip()
+        # Skip cookie attributes that look like names
+        if name.lower() in ("path", "domain", "expires", "max-age", "samesite", "secure", "httponly"):
+            continue
+        if not value.strip():
+            continue
+        cookies.append({
+            "name": name,
+            "value": value,
+            "domain": ".duolingo.com",
+            "path": "/",
+        })
+
+    if cookies:
+        context.add_cookies(cookies)
+        print(f"  Injected {len(cookies)} cookies into browser")
+
+    # Also try to get jwt token from response body
+    if "jwt" in body:
+        context.add_cookies([{
+            "name": "jwt_token",
+            "value": body["jwt"],
+            "domain": ".duolingo.com",
+            "path": "/",
+        }])
+        print("  Injected JWT token")
+
+    return body
+
+
 def login_duolingo(page):
-    # Try the direct login page first, fall back to homepage + click
-    login_urls = [
-        "https://www.duolingo.com/log-in",
-        "https://www.duolingo.com/?isLoggingIn=true",
+    """Login via web form (for local use with visible browser)."""
+    page.goto("https://www.duolingo.com/?isLoggingIn=true")
+    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_timeout(3000)
+
+    # Click "I ALREADY HAVE AN ACCOUNT" to open login modal
+    sign_in_selectors = [
+        'button:has-text("I ALREADY HAVE AN ACCOUNT")',
+        'button:has-text("I already have an account")',
+        'button:has-text("SIGN IN")',
+        'button:has-text("Sign in")',
+        'button:has-text("LOG IN")',
+        'button:has-text("Log in")',
+        'a:has-text("I ALREADY HAVE AN ACCOUNT")',
+        'a:has-text("SIGN IN")',
+        'a:has-text("LOG IN")',
+    ]
+    for sel in sign_in_selectors:
+        try:
+            btn = page.locator(sel).first
+            if btn.is_visible(timeout=2000):
+                btn.click()
+                print(f"  Clicked: {sel}")
+                page.wait_for_timeout(2000)
+                break
+        except Exception:
+            continue
+
+    # Find login form fields
+    email_selectors = [
+        '#web-ui1', 'input[data-test="email-input"]',
+        'input[type="email"]', 'input[type="text"]',
+    ]
+    password_selectors = [
+        '#web-ui2', 'input[data-test="password-input"]',
+        'input[type="password"]',
     ]
 
-    for login_url in login_urls:
-        page.goto(login_url)
-        page.wait_for_load_state("domcontentloaded")
-        page.wait_for_timeout(3000)
+    email_input = None
+    for sel in email_selectors:
+        try:
+            loc = page.locator(sel).first
+            loc.wait_for(timeout=3000)
+            email_input = loc
+            break
+        except Exception:
+            continue
 
-        # If on homepage, try clicking sign-in buttons to open login modal
-        sign_in_selectors = [
-            'button:has-text("I ALREADY HAVE AN ACCOUNT")',
-            'button:has-text("I already have an account")',
-            'a:has-text("I ALREADY HAVE AN ACCOUNT")',
-            'a:has-text("I already have an account")',
-            'button:has-text("SIGN IN")',
-            'button:has-text("Sign in")',
-            'a:has-text("SIGN IN")',
-            'a:has-text("Sign in")',
-            'button:has-text("LOG IN")',
-            'button:has-text("Log in")',
-            'a:has-text("LOG IN")',
-        ]
-        for sel in sign_in_selectors:
-            try:
-                btn = page.locator(sel).first
-                if btn.is_visible(timeout=2000):
-                    btn.click()
-                    print(f"  Clicked: {sel}")
-                    page.wait_for_timeout(2000)
-                    break
-            except Exception:
-                continue
-
-        # Now look for login form fields
-        email_input = None
-        password_input = None
-
-        email_selectors = [
-            '#web-ui1',
-            'input[data-test="email-input"]',
-            'input[name="identifier"]',
-            'input[type="email"]',
-            'input[type="text"]',
-        ]
-        password_selectors = [
-            '#web-ui2',
-            'input[data-test="password-input"]',
-            'input[name="password"]',
-            'input[type="password"]',
-        ]
-
-        for sel in email_selectors:
-            try:
-                loc = page.locator(sel).first
-                loc.wait_for(timeout=3000)
-                email_input = loc
-                print(f"  Found email input: {sel}")
-                break
-            except Exception:
-                continue
-
-        for sel in password_selectors:
-            try:
-                loc = page.locator(sel).first
-                loc.wait_for(timeout=3000)
-                password_input = loc
-                print(f"  Found password input: {sel}")
-                break
-            except Exception:
-                continue
-
-        if email_input and password_input:
-            break  # Found the form, proceed
-        else:
-            print(f"  Login form not found at {login_url}, trying next...")
+    password_input = None
+    for sel in password_selectors:
+        try:
+            loc = page.locator(sel).first
+            loc.wait_for(timeout=3000)
+            password_input = loc
+            break
+        except Exception:
+            continue
 
     if not email_input or not password_input:
-        # Take screenshot for debugging
         try:
             page.screenshot(path="login_debug.png")
-            print("  ⚠ Saved login_debug.png for debugging")
         except Exception:
             pass
         raise Exception(f"Could not find login fields. URL: {page.url}")
 
-    human_sleep(0.3, 0.8)
     email_input.fill(EMAIL)
     human_sleep(0.5, 1.0)
     password_input.fill(PASSWORD)
     human_sleep(0.5, 1.5)
 
-    # Try multiple selectors for login button
-    login_clicked = False
-    login_btn_selectors = [
-        'button:has-text("SIGN IN")',
-        'button:has-text("Sign in")',
-        'button:has-text("Log in")',
-        'button:has-text("LOG IN")',
-        'button[type="submit"]',
-    ]
-    for sel in login_btn_selectors:
+    # Click login button
+    for sel in ['button:has-text("LOG IN")', 'button:has-text("Log in")',
+                'button:has-text("SIGN IN")', 'button[type="submit"]']:
         try:
-            btn = page.locator(sel).first
-            btn.click(timeout=3000)
+            page.locator(sel).first.click(timeout=3000)
             print(f"  Clicked login button: {sel}")
-            login_clicked = True
             break
         except Exception:
             continue
 
-    if not login_clicked:
-        raise Exception("Could not find login button")
-
-    # Wait for redirect to /learn after login
+    # Wait for redirect
     try:
         page.wait_for_url("**/learn**", timeout=30000)
         print("Login successful - redirected to learn page")
     except Exception:
-        page.wait_for_timeout(10000)
+        page.wait_for_timeout(5000)
         current_url = page.url
-        print(f"  Login step done - current URL: {current_url}")
-
-        # Try to read any error message on the page
-        try:
-            error_selectors = [
-                '[data-test="invalid-form-field-message"]',
-                '[class*="error"]',
-                '[class*="Error"]',
-                '[role="alert"]',
-                '.invalid-form-field',
-            ]
-            for sel in error_selectors:
-                try:
-                    el = page.locator(sel).first
-                    if el.is_visible(timeout=1000):
-                        print(f"  ⚠ Login error: {el.inner_text()}")
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        # Check if we're still on login page
-        if "/log-in" in current_url or "/login" in current_url or "isLoggingIn" in current_url:
+        if "/log-in" in current_url or "isLoggingIn" in current_url:
             try:
                 page.screenshot(path="login_failed.png")
-                print("  ⚠ Saved login_failed.png for debugging")
             except Exception:
                 pass
             raise Exception(f"Login failed - still on login page: {current_url}")
@@ -1173,7 +1178,12 @@ def main():
         """)
 
         if not os.path.exists(SESSION_FILE):
-            login_duolingo(page)
+            if headless:
+                # Use API login on CI to bypass reCAPTCHA
+                print("  Using API login (headless mode)...")
+                login_duolingo_api(context)
+            else:
+                login_duolingo(page)
             print("Saving session...")
             context.storage_state(path=SESSION_FILE)
 
@@ -1189,7 +1199,10 @@ def main():
             # Delete stale session
             if os.path.exists(SESSION_FILE):
                 os.remove(SESSION_FILE)
-            login_duolingo(page)
+            if headless:
+                login_duolingo_api(context)
+            else:
+                login_duolingo(page)
             context.storage_state(path=SESSION_FILE)
             page.goto("https://www.duolingo.com/learn")
             page.wait_for_load_state("domcontentloaded")
