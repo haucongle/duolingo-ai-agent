@@ -1,4 +1,3 @@
-duo_session.json
 __pycache__/
 *.pyc
 .venv/
@@ -6,3 +5,7 @@ __pycache__/
 .vscode/
 
 .env
+
+playwright-videos/
+en_duo_session.json
+vi_duo_session.json

@@ -21,11 +21,11 @@ except ImportError:
 
 load_dotenv()
 
-EMAIL = os.getenv("DUO_EMAIL")
-PASSWORD = os.getenv("DUO_PASSWORD")
+EMAIL = os.getenv("VI_DUO_EMAIL")
+PASSWORD = os.getenv("VI_DUO_PASSWORD")
 DUO_JWT = os.getenv("DUO_JWT")  # Optional: pre-authenticated JWT token
 
-SESSION_FILE = "en_duo_session.json"
+SESSION_FILE = "vi_duo_session.json"
 
 # Chance of deliberately answering wrong (0.0 - 1.0)
 WRONG_ANSWER_CHANCE = 0.10
@@ -37,6 +37,7 @@ MAX_LESSONS = int(os.getenv("MAX_LESSONS", "0"))
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 PROMPT = """You are an AI agent that solves Duolingo exercises automatically.
+This is an English course for Vietnamese speakers. The UI may be in Vietnamese.
 
 Look at this Duolingo screenshot and determine:
 1. The type of exercise
@@ -47,7 +48,7 @@ Look at this Duolingo screenshot and determine:
 Respond ONLY with valid JSON (no markdown, no explanation) using this format:
 
 {
-  "type": "image_choice | multiple_choice | word_bank | typing | matching | listening | tap_pairs | no_question",
+  "type": "image_choice | multiple_choice | word_bank | typing | matching | audio_matching | audio_fill_blank | listen_and_type | speaking | listening | tap_pairs | no_question",
   "question": "brief description of the question",
   "answer": "the correct answer",
   "all_options": ["option1", "option2", "option3"],
@@ -64,7 +65,7 @@ Exercise types and how to answer:
 - image_choice: Cards with images and labels, each card has a number shortcut (1, 2, 3...).
   Press the number key of the correct card.
   actions = [{"action": "press", "key": "2"}]
-  all_options = ["咖啡", "豆腐", "粥"], total_options = 3
+  all_options = ["coffee", "tofu", "rice"], total_options = 3
 
 - multiple_choice: Text options to click. actions = [{"action": "click", "target": "exact option text"}]
   If options have number shortcuts (1, 2, 3...), prefer: actions = [{"action": "press", "key": "1"}]
@@ -78,28 +79,71 @@ Exercise types and how to answer:
   actions = [{"action": "type", "target": "input", "value": "the answer"}]
   all_options = [], total_options = 0
 
-- matching / tap_pairs: "Select the matching pairs" - cards with number shortcuts (1-5 left, 6-0 right).
-  Look at the number shown on each card. Press the number for the left item, then the number for its right match.
-  actions = [{"action": "press", "key": "1"}, {"action": "press", "key": "9"}, {"action": "press", "key": "2"}, {"action": "press", "key": "7"}, ...]
-  Pair format: left_number, right_number, left_number, right_number, ...
-  all_options = ["1:This is", "2:tea", "3:tofu", "6:这是", "7:粥", "8:茶", "9:豆腐"], total_options = number of cards
+- matching / tap_pairs: "Select the matching pairs" / "Chọn cặp từ" - cards with number shortcuts.
+  There are TWO sub-types:
+
+  (A) Text-Text matching: both sides show text. Left side has number shortcuts 1-4, right side 5-8.
+      actions = [{"action": "press", "key": "1"}, {"action": "press", "key": "7"}, ...]
+      all_options = ["1:This is", "2:tea", "5:Đây là", "6:trà", "7:cháo", "8:đậu phụ"], total_options = number of cards
+
+  (B) Audio-Text matching ("Chọn cặp từ"): left side has AUDIO waveforms with numbers (1-4),
+      right side has Vietnamese text with numbers (5-8).
+      You CANNOT hear the audio. Return type="audio_matching" instead.
+      List ONLY the right-side Vietnamese text options.
+      actions = [] (will be handled by audio recognition)
+      all_options = ["5:kéo", "6:chăn", "7:đủ", "8:sáu mươi"], total_options = number of right-side cards
+      left_keys = ["1", "2", "3", "4"] (the number keys for the left audio cards)
+
+  How to tell them apart: if the left cards show speaker icons / audio waveforms instead of text,
+  it is audio_matching. If both sides show readable text, it is matching/tap_pairs.
+
+- audio_matching: Audio-to-text matching exercise (see matching type B above).
+  actions = [] (will be handled by audio recognition)
+  all_options = list of "number:text" for the RIGHT side only (e.g. ["5:kéo", "6:chăn", "7:đủ", "8:sáu mươi"])
+  left_keys = ["1", "2", "3", "4"] (number keys of left audio cards)
+  total_options = number of right-side cards
+
+- audio_fill_blank: "Nghe và tìm từ còn thiếu" with AUDIO OPTION CARDS below.
+  A sentence with a blank (___) is shown, plus numbered audio waveform cards (1, 2, ...) as answer choices.
+  You CANNOT hear the audio options. Return type="audio_fill_blank".
+  actions = [] (will be handled by audio recognition)
+  sentence = "The famous writer was ___ in the 19th century." (the sentence with the blank)
+  all_options = ["1", "2"] (the number keys of the audio option cards)
+  total_options = number of audio option cards
+
+- listen_and_type: "Nhập từ còn thiếu" / "Type the missing word" - listen to audio and TYPE the answer.
+  A sentence with a blank (___) is shown, plus a TEXT INPUT field to type in, and speaker buttons to hear the audio.
+  There are NO numbered audio option cards — just speaker buttons and a text input.
+  You CANNOT hear the audio. Return type="listen_and_type".
+  actions = [] (will be handled by audio recognition + typing)
+  sentence = "I don't have any ___." (the sentence with the blank, use ___ for the blank)
+  all_options = [], total_options = 0
+
+  How to tell audio_fill_blank vs listen_and_type apart:
+  - audio_fill_blank: has numbered audio OPTION CARDS (1, 2) below the sentence → select one
+  - listen_and_type: has a TEXT INPUT field below the sentence → type the missing word
 
 - listening: "Tap what you hear" - has a speaker button and a word bank below.
   DO NOT guess the answer. Just return the visible word bank options.
   actions = [] (will be handled by audio recognition)
-  all_options = list ALL visible words/chips in the word bank (e.g. ["粥", "水", "这是", "豆腐", "米饭", "和"])
+  all_options = list ALL visible words/chips in the word bank (e.g. ["the", "is", "water", "and", "rice", "this"])
   total_options = number of words in the bank
+
+- speaking: "Đọc câu này" / "Read this sentence" - requires microphone to speak.
+  Has a "NHẤN ĐỂ ĐỌC" (tap to speak) button. Cannot be solved by a bot.
+  actions = [] (will be skipped)
+  all_options = [], total_options = 0
 
 - no_question: No exercise visible (loading, result screen, etc). actions = []
   all_options = [], total_options = 0
 
 IMPORTANT:
 - For image_choice: look for number labels (1, 2, 3) on each card, use "press" with that number
-- For word_bank: each "target" must be the Chinese characters (汉字) of the word, NOT the pinyin.
-  Example: use "粥" not "zhōu", use "这是" not "zhèshì", use "豆腐" not "dòu fu"
-- For multiple_choice: "target" must be the Chinese characters (汉字) of the option, or use "press" if number shortcuts are visible
-- For typing: "value" is the full answer to type
-- all_options should list the Chinese characters (汉字) of all visible options
+- For word_bank: each "target" must be the exact visible text of the word/chip on screen.
+  Options may be in English or Vietnamese depending on the exercise direction.
+- For multiple_choice: "target" must be the exact text of the option, or use "press" if number shortcuts are visible
+- For typing: "value" is the full answer to type (in English or Vietnamese as required by the exercise)
+- all_options should list the exact visible text of all options on screen
 - Be precise with the text - it must match what's on screen exactly
 - Always fill all_options with ALL visible options and total_options with the count
 """
@@ -212,7 +256,7 @@ def transcribe_audio(audio_path):
             result = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=f,
-                language="zh",  # Chinese for Duolingo Chinese course
+                language="en",  # English for Duolingo English course
             )
         text = result.text.strip()
         print(f"  Whisper result: '{text}'")
@@ -336,6 +380,315 @@ def match_words_to_transcript(transcript, options):
             remaining = remaining[1:]
 
     return result
+
+
+def match_english_to_vietnamese(english_word, vietnamese_options):
+    """Use GPT to match an English word/phrase to the correct Vietnamese option."""
+    try:
+        options_str = ", ".join(f'"{opt}"' for opt in vietnamese_options)
+        r = client.responses.create(
+            model="gpt-4o-mini",
+            input=[{
+                "role": "user",
+                "content": (
+                    f'The English word/phrase is: "{english_word}"\n'
+                    f'The Vietnamese options are: [{options_str}]\n'
+                    f'Which Vietnamese option is the correct translation? '
+                    f'Reply with ONLY the exact Vietnamese text, nothing else.'
+                ),
+            }],
+        )
+        match = r.output_text.strip().strip('"').strip("'")
+        print(f"    GPT match: '{english_word}' → '{match}'")
+        return match
+    except Exception as e:
+        print(f"    ⚠ GPT matching failed: {e}")
+        return None
+
+
+def handle_audio_matching(page, result):
+    """Handle audio-text matching: click left audio card → record → transcribe → match Vietnamese right card."""
+
+    all_options = result.get("all_options", [])  # e.g. ["5:kéo", "6:chăn", "7:đủ", "8:sáu mươi"]
+    left_keys = result.get("left_keys", [])      # e.g. ["1", "2", "3", "4"]
+
+    if not left_keys:
+        # Fallback: assume left keys are 1..N where N = len(all_options)
+        left_keys = [str(i) for i in range(1, len(all_options) + 1)]
+
+    # Parse right-side options: "5:kéo" → {key: "5", text: "kéo"}
+    right_options = []
+    for opt in all_options:
+        if ":" in opt:
+            key, text = opt.split(":", 1)
+            right_options.append({"key": key.strip(), "text": text.strip()})
+
+    if not right_options:
+        print("  ⚠ No right-side options parsed, skipping...")
+        skip_if_stuck(page)
+        return False
+
+    vietnamese_texts = [r["text"] for r in right_options]
+    matched_right_keys = set()
+
+    for left_key in left_keys:
+        print(f"\n  🔊 Playing audio card [{left_key}]...")
+
+        # Step 1: Start recording
+        recording = start_recording(duration=4.0)
+
+        # Step 2: Press the left card number to play its audio
+        time.sleep(0.3)
+        page.keyboard.press(left_key)
+        human_sleep(0.5, 1.0)
+
+        if not recording:
+            print(f"    ⚠ No audio support, using GPT vision fallback...")
+            # Take a screenshot after clicking to see if any visual hint appears
+            img = page.screenshot(type="jpeg", quality=80)
+            # Can't do much without audio, skip this card
+            continue
+
+        # Step 3: Wait for recording to finish
+        audio_path = finish_recording(recording)
+        if not audio_path:
+            print(f"    ⚠ Recording failed for card [{left_key}]")
+            continue
+
+        # Step 4: Transcribe
+        transcript = transcribe_audio(audio_path)
+        try:
+            os.remove(audio_path)
+        except Exception:
+            pass
+
+        if not transcript:
+            print(f"    ⚠ Transcription failed for card [{left_key}]")
+            continue
+
+        # Step 5: Match English transcript to Vietnamese option using GPT
+        remaining_vietnamese = [t for t in vietnamese_texts if t not in matched_right_keys]
+        matched_text = match_english_to_vietnamese(transcript, remaining_vietnamese)
+
+        if matched_text:
+            # Find the right-side key for this text
+            for r in right_options:
+                if r["text"] == matched_text and r["text"] not in matched_right_keys:
+                    print(f"    Pressing right card [{r['key']}] for '{matched_text}'")
+                    page.keyboard.press(r["key"])
+                    matched_right_keys.add(r["text"])
+                    human_sleep(0.3, 0.8)
+                    break
+            else:
+                # Fuzzy match: try case-insensitive partial match
+                for r in right_options:
+                    if r["text"] not in matched_right_keys and (
+                        matched_text.lower() in r["text"].lower()
+                        or r["text"].lower() in matched_text.lower()
+                    ):
+                        print(f"    Pressing right card [{r['key']}] for '{r['text']}' (fuzzy)")
+                        page.keyboard.press(r["key"])
+                        matched_right_keys.add(r["text"])
+                        human_sleep(0.3, 0.8)
+                        break
+
+    return len(matched_right_keys) > 0
+
+
+def handle_audio_fill_blank(page, result):
+    """Handle 'Nghe và tìm từ còn thiếu' — sentence with blank + audio answer options.
+    Strategy: play the main sentence audio first to get full sentence via Whisper,
+    then figure out the missing word by comparing with the sentence shown on screen.
+    If that fails, click each audio option, transcribe, and pick the one that fits the blank.
+    """
+    sentence = result.get("sentence", "") or result.get("question", "")
+    option_keys = result.get("all_options", [])  # e.g. ["1", "2"]
+
+    if not option_keys:
+        print("  ⚠ No audio options found, skipping...")
+        skip_if_stuck(page)
+        return False
+
+    print(f"  Sentence: {sentence}")
+    print(f"  Audio options: {option_keys}")
+
+    # Strategy: click the main sentence speaker to hear full sentence,
+    # then transcribe each option and use GPT to pick the right one.
+
+    # Step 1: Try to get the full sentence by clicking the sentence speaker icon
+    full_transcript = None
+    if HAS_AUDIO:
+        recording = start_recording(duration=5.0)
+        if recording:
+            time.sleep(0.3)
+            # Click the speaker icon in the sentence area
+            click_speaker(page)
+            audio_path = finish_recording(recording)
+            if audio_path:
+                full_transcript = transcribe_audio(audio_path)
+                try:
+                    os.remove(audio_path)
+                except Exception:
+                    pass
+
+    if full_transcript:
+        print(f"  Full sentence audio: '{full_transcript}'")
+
+    # Step 2: Transcribe each audio option
+    option_transcripts = {}
+    for key in option_keys:
+        if not HAS_AUDIO:
+            break
+        print(f"  🔊 Playing option [{key}]...")
+        recording = start_recording(duration=3.0)
+        if not recording:
+            continue
+        time.sleep(0.3)
+        page.keyboard.press(key)
+        human_sleep(0.5, 0.8)
+        audio_path = finish_recording(recording)
+        if audio_path:
+            transcript = transcribe_audio(audio_path)
+            if transcript:
+                option_transcripts[key] = transcript
+            try:
+                os.remove(audio_path)
+            except Exception:
+                pass
+
+    print(f"  Option transcripts: {option_transcripts}")
+
+    if not option_transcripts:
+        print("  ⚠ Could not transcribe any options, skipping...")
+        skip_if_stuck(page)
+        return False
+
+    # Step 3: Use GPT to pick the correct option
+    correct_key = None
+    if full_transcript and sentence:
+        # We have both the full spoken sentence and the written sentence with blank
+        # Ask GPT which option fills the blank
+        try:
+            options_str = ", ".join(f'{k}: "{v}"' for k, v in option_transcripts.items())
+            r = client.responses.create(
+                model="gpt-4o-mini",
+                input=[{
+                    "role": "user",
+                    "content": (
+                        f'A Duolingo exercise shows this sentence with a blank: "{sentence}"\n'
+                        f'The full spoken sentence is: "{full_transcript}"\n'
+                        f'The audio options are: {options_str}\n'
+                        f'Which option number fills the blank correctly? '
+                        f'Reply with ONLY the number (e.g. "1" or "2"), nothing else.'
+                    ),
+                }],
+            )
+            correct_key = r.output_text.strip()
+            print(f"  GPT picked option: {correct_key}")
+        except Exception as e:
+            print(f"  ⚠ GPT selection failed: {e}")
+
+    if not correct_key or correct_key not in option_transcripts:
+        # Fallback: if we have the full transcript, find which option word appears in it
+        # but not in the visible sentence
+        if full_transcript and sentence:
+            clean = lambda s: re.sub(r'[^\w\s\']', '', s.lower())
+            full_clean = clean(full_transcript)
+            sentence_clean = clean(sentence.replace("___", "").replace("_", ""))
+            for key, transcript in option_transcripts.items():
+                word = clean(transcript).strip()
+                if word and word in full_clean and word not in sentence_clean:
+                    correct_key = key
+                    print(f"  Fallback match: option [{key}] '{transcript}' found in full sentence")
+                    break
+
+    if not correct_key or correct_key not in option_transcripts:
+        # Last resort: pick first option
+        correct_key = option_keys[0]
+        print(f"  ⚠ Could not determine answer, guessing option [{correct_key}]")
+
+    # Step 4: Select the answer by pressing the key
+    print(f"  Selecting option [{correct_key}]: '{option_transcripts.get(correct_key, '?')}'")
+    page.keyboard.press(correct_key)
+    human_sleep(0.3, 0.8)
+
+    return True
+
+
+def handle_listen_and_type(page, result):
+    """Handle 'Nhập từ còn thiếu' — listen to audio, find missing word, type it."""
+    sentence = result.get("sentence", "") or result.get("question", "")
+    print(f"  Sentence: {sentence}")
+
+    # Step 1: Listen to the full sentence via speaker button
+    full_transcript = None
+    if HAS_AUDIO:
+        recording = start_recording(duration=5.0)
+        if recording:
+            time.sleep(0.3)
+            click_speaker(page)
+            audio_path = finish_recording(recording)
+            if audio_path:
+                full_transcript = transcribe_audio(audio_path)
+                try:
+                    os.remove(audio_path)
+                except Exception:
+                    pass
+
+    if not full_transcript:
+        print("  ⚠ Could not transcribe audio, skipping...")
+        skip_if_stuck(page)
+        return False
+
+    print(f"  Full sentence: '{full_transcript}'")
+
+    # Step 2: Find the missing word by comparing transcript with the sentence
+    missing_word = None
+
+    # Use GPT to extract the missing word
+    if sentence:
+        try:
+            r = client.responses.create(
+                model="gpt-4o-mini",
+                input=[{
+                    "role": "user",
+                    "content": (
+                        f'A Duolingo exercise shows this sentence with a blank: "{sentence}"\n'
+                        f'The full spoken sentence is: "{full_transcript}"\n'
+                        f'What is the missing word or phrase that fills the blank? '
+                        f'Reply with ONLY the missing word(s), nothing else.'
+                    ),
+                }],
+            )
+            missing_word = r.output_text.strip().strip('"').strip("'").rstrip(".")
+            print(f"  Missing word: '{missing_word}'")
+        except Exception as e:
+            print(f"  ⚠ GPT extraction failed: {e}")
+
+    if not missing_word:
+        # Fallback: simple diff — find words in transcript not in sentence
+        clean = lambda s: re.sub(r'[^\w\s\']', '', s.lower().replace("___", ""))
+        sentence_words = clean(sentence).split()
+        transcript_words = clean(full_transcript).split()
+        # Remove each sentence word from transcript words (preserving order, handling duplicates)
+        remaining = list(transcript_words)
+        for sw in sentence_words:
+            if sw in remaining:
+                remaining.remove(sw)
+        if remaining:
+            missing_word = " ".join(remaining)
+            print(f"  Fallback missing word: '{missing_word}'")
+
+    if not missing_word:
+        print("  ⚠ Could not find missing word, skipping...")
+        skip_if_stuck(page)
+        return False
+
+    # Step 3: Type the missing word
+    print(f"  Typing missing word: '{missing_word}'")
+    type_answer(page, missing_word)
+
+    return True
 
 
 def analyze_screen(img):
@@ -473,43 +826,20 @@ def execute_actions(page, result, force_wrong=False):
     return True
 
 
-def extract_hanzi_pinyin(text):
-    """Extract Chinese characters (hanzi) and pinyin from mixed text.
-    Examples:
-        '汤tāng' → ('汤', 'tāng')
-        'dòu fu\\n豆腐' → ('豆腐', 'dòu fu')
-        'tāng\\n汤' → ('汤', 'tāng')
-        '豆腐' → ('豆腐', '')
-        'This' → ('This', '')
+def extract_display_text(text):
+    """Extract the primary display text from a word token.
+    For English/Vietnamese, just return the visible text as-is.
+    If multi-line, return the first non-empty line as primary.
     """
-    # First try splitting by newlines
     lines = [l.strip() for l in text.split("\n") if l.strip()]
-    if len(lines) >= 2:
-        # Check which line has Chinese chars
-        for line in lines:
-            if re.search(r'[\u4e00-\u9fff]', line) and not re.search(r'[a-zA-Zāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ]', line):
-                hanzi = line
-                pinyin = " ".join(l.strip() for l in lines if l.strip() != line)
-                return hanzi, pinyin
-        # If mixed, last line is usually hanzi
-        return lines[-1], lines[0]
-
-    # Single line - might be mixed like "汤tāng" or "dòu fu豆腐"
-    # Extract Chinese characters
-    hanzi_chars = re.findall(r'[\u4e00-\u9fff]+', text)
-    if hanzi_chars:
-        hanzi = "".join(hanzi_chars)
-        # Everything else is pinyin
-        pinyin = re.sub(r'[\u4e00-\u9fff]+', '', text).strip()
-        return hanzi, pinyin
-
-    # No Chinese characters (English text)
+    if lines:
+        return lines[0], ""
     return text, ""
 
 
 def get_all_word_tokens(page):
     """Get all visible word bank tokens with their text content and elements.
-    Returns list of dicts with full_text, hanzi, pinyin, locator.
+    Returns list of dicts with full_text, display_text, secondary, locator.
     """
     tokens = []
     # Duolingo word bank tokens - try many selectors
@@ -539,19 +869,19 @@ def get_all_word_tokens(page):
                     full_text = loc.inner_text(timeout=200).strip()
                     if not full_text:
                         continue
-                    hanzi, pinyin = extract_hanzi_pinyin(full_text)
+                    display_text, secondary = extract_display_text(full_text)
 
                     tokens.append({
                         "full_text": full_text,
-                        "hanzi": hanzi,
-                        "pinyin": pinyin,
+                        "display_text": display_text,
+                        "secondary": secondary,
                         "locator": loc,
                     })
                 except Exception:
                     continue
 
             if tokens:
-                print(f"    Found {len(tokens)} tokens via '{sel}': {[t['hanzi'] for t in tokens]}")
+                print(f"    Found {len(tokens)} tokens via '{sel}': {[t['display_text'] for t in tokens]}")
                 return tokens
         except Exception:
             continue
@@ -569,20 +899,21 @@ def get_all_word_tokens(page):
                     text = btn.inner_text(timeout=100).strip()
                     # Filter: skip known UI buttons, keep short text (word tokens)
                     skip_texts = {"check", "skip", "continue", "can't listen now",
-                                  "use keyboard", "start", "guidebook"}
+                                  "use keyboard", "start", "guidebook",
+                                  "kiểm tra", "bỏ qua", "tiếp tục"}
                     if not text or text.lower() in skip_texts or len(text) > 20:
                         continue
-                    hanzi, pinyin = extract_hanzi_pinyin(text)
+                    display_text, secondary = extract_display_text(text)
                     tokens.append({
                         "full_text": text,
-                        "hanzi": hanzi,
-                        "pinyin": pinyin,
+                        "display_text": display_text,
+                        "secondary": secondary,
                         "locator": btn,
                     })
                 except Exception:
                     continue
             if tokens:
-                print(f"    Found {len(tokens)} tokens via button scan: {[t['hanzi'] for t in tokens]}")
+                print(f"    Found {len(tokens)} tokens via button scan: {[t['display_text'] for t in tokens]}")
         except Exception:
             pass
 
@@ -590,16 +921,16 @@ def get_all_word_tokens(page):
 
 
 def click_word_token(page, text):
-    """Click a word bank token matching the given text (handles pinyin+hanzi).
+    """Click a word bank token matching the given text.
     Re-queries tokens every time because DOM changes after each click.
     """
     # Always re-query tokens (DOM changes after every click)
     tokens = get_all_word_tokens(page)
 
     if tokens:
-        # Try matching: hanzi exact → pinyin exact
+        # Try exact match first
         for token in tokens:
-            if token["hanzi"] == text or token["pinyin"] == text:
+            if token["display_text"] == text or token["secondary"] == text:
                 try:
                     token["locator"].click(timeout=500)
                     return True
@@ -609,16 +940,16 @@ def click_word_token(page, text):
         # Case-insensitive match (for English words like "This" vs "this")
         text_lower = text.lower()
         for token in tokens:
-            if token["hanzi"].lower() == text_lower:
+            if token["display_text"].lower() == text_lower:
                 try:
                     token["locator"].click(timeout=500)
                     return True
                 except Exception:
                     continue
 
-        # Partial match: text contained in hanzi or vice versa
+        # Partial match: text contained in display_text or vice versa
         for token in tokens:
-            if text in token["hanzi"] or token["hanzi"] in text:
+            if text in token["display_text"] or token["display_text"] in text:
                 try:
                     token["locator"].click(timeout=500)
                     return True
@@ -639,9 +970,9 @@ def click_word_token(page, text):
 
 
 def click_target(page, text):
-    """Click an element matching the given text. Smart matching for Chinese (hanzi+pinyin)."""
+    """Click an element matching the given text."""
 
-    # First try the smart word token matching (handles pinyin+hanzi)
+    # First try the smart word token matching
     if click_word_token(page, text):
         return True
 
@@ -744,15 +1075,17 @@ def handle_post_answer(page):
     click_button(page, ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"])
     human_sleep(0.3, 0.8)
 
-    # Click CONTINUE button (appears after check)
-    click_button(page, ["Continue", "CONTINUE"])
+    # Click CONTINUE / TIẾP TỤC button (appears after check)
+    click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
     human_sleep(0.5, 1.5)
 
 
 def skip_if_stuck(page):
     """Click Skip if available (for listening exercises etc)."""
     try:
-        click_button(page, ["Skip", "SKIP", "CAN'T LISTEN NOW"])
+        click_button(page, ["TẠM THỜI KHÔNG NÓI ĐƯỢC", "Tạm thời không nói được",
+                            "CAN'T SPEAK NOW", "Skip", "SKIP", "BỎ QUA",
+                            "CAN'T LISTEN NOW"])
         return True
     except Exception:
         return False
@@ -762,18 +1095,21 @@ def click_start_xp_button(page):
     """Click the 'START +XX XP' button in the lesson popup."""
     import re
 
-    # Try multiple approaches to find the XP start button
+    # Try multiple approaches to find the XP start button (Vietnamese: "BẮT ĐẦU +XX KN")
     attempts = [
-        # 1. Regex match on any element containing "START" and "XP"
+        # 1. Vietnamese: "BẮT ĐẦU +XX KN"
+        lambda: page.get_by_text(re.compile(r"BẮT ĐẦU\s*\+\s*\d+\s*KN", re.IGNORECASE)).first,
+        lambda: page.get_by_text(re.compile(r"BẮT ĐẦU\s*\+", re.IGNORECASE)).first,
+        lambda: page.locator('button:has-text("BẮT ĐẦU +")').first,
+        lambda: page.locator('a:has-text("BẮT ĐẦU +")').first,
+        lambda: page.locator('div:has-text("BẮT ĐẦU +")').last,
+        # 2. English fallback: "START +XX XP"
         lambda: page.get_by_text(re.compile(r"START\s*\+\s*\d+\s*XP", re.IGNORECASE)).first,
-        # 2. Any element with text containing "START +"
         lambda: page.get_by_text(re.compile(r"START\s*\+", re.IGNORECASE)).first,
-        # 3. Button with has-text
         lambda: page.locator('button:has-text("START +")').first,
-        # 4. Any clickable element (a, button, div[role=button]) with XP text
         lambda: page.locator('a:has-text("START +")').first,
         lambda: page.locator('div:has-text("START +")').last,
-        # 5. data-test attribute for start button
+        # 3. data-test attribute for start button
         lambda: page.locator('[data-test="start-button"]').first,
     ]
 
@@ -860,7 +1196,7 @@ def start_lesson(page):
         return True
 
     # Step 1: Click the "START" label above the active lesson icon
-    start_texts = ["START", "Start"]
+    start_texts = ["BẮT ĐẦU", "Bắt đầu", "START", "Start"]
     clicked_start = False
 
     for text in start_texts:
@@ -901,8 +1237,8 @@ def start_lesson(page):
         return True
 
     # Step 3: Fallback - try other popup buttons
-    popup_texts = ["START", "Start", "START LESSON", "CONTINUE", "Continue",
-                   "PRACTICE"]
+    popup_texts = ["BẮT ĐẦU", "Bắt đầu", "START", "Start", "START LESSON",
+                   "TIẾP TỤC", "CONTINUE", "Continue", "LUYỆN TẬP", "PRACTICE"]
     for text in popup_texts:
         try:
             btn = page.locator(f'button:has-text("{text}")').first
@@ -917,7 +1253,7 @@ def start_lesson(page):
     return True
 
 
-_profile_raw = os.getenv("DUO_PROFILE_URL", "")
+_profile_raw = os.getenv("VI_DUO_PROFILE_URL", "")
 PROFILE_URL = (
     _profile_raw if _profile_raw.startswith("http")
     else f"https://www.duolingo.com/profile/{_profile_raw}" if _profile_raw
@@ -955,6 +1291,7 @@ def get_xp(page):
 
         # Find XP: match "NNN XP" (English) or "NNN\nTổng điểm KN" (Vietnamese)
         all_xp = re.findall(r'([\d,]+)\s*XP', page_text)
+        # Also match Vietnamese format: number followed by "Tổng điểm KN"
         vi_xp = re.findall(r'([\d,]+)\s*\n?\s*Tổng điểm KN', page_text)
         all_xp.extend(vi_xp)
         if all_xp:
@@ -1320,7 +1657,8 @@ def main():
                     # Try clicking continue/next in case we're on a result screen
                     click_button(
                         page,
-                        ["Continue", "CONTINUE", "Next", "START", "Start"],
+                        ["TIẾP TỤC", "Tiếp tục", "Continue", "CONTINUE", "Next",
+                         "BẮT ĐẦU", "Bắt đầu", "START", "Start"],
                     )
 
                     # If stuck with no questions answered, something is wrong
@@ -1381,6 +1719,41 @@ def main():
 
                 consecutive_no_question = 0
                 question_count += 1
+
+                # Handle audio matching exercises (Chọn cặp từ with audio)
+                if q_type == "audio_matching":
+                    print("  🔊 Audio matching exercise detected (Chọn cặp từ)")
+                    human_sleep(0.3, 0.8)
+                    executed = handle_audio_matching(page, result)
+                    if executed:
+                        handle_post_answer(page)
+                    continue
+
+                # Handle speaking exercises (Đọc câu này) — skip, no mic
+                if q_type == "speaking":
+                    print("  🎤 Speaking exercise detected (Đọc câu này) — skipping (no mic)")
+                    skip_if_stuck(page)
+                    human_sleep(0.5, 1.0)
+                    handle_post_answer(page)
+                    continue
+
+                # Handle audio fill-in-the-blank (Nghe và tìm từ còn thiếu)
+                if q_type == "audio_fill_blank":
+                    print("  🔊 Audio fill-blank exercise detected (Nghe và tìm từ còn thiếu)")
+                    human_sleep(0.3, 0.8)
+                    executed = handle_audio_fill_blank(page, result)
+                    if executed:
+                        handle_post_answer(page)
+                    continue
+
+                # Handle listen-and-type (Nhập từ còn thiếu)
+                if q_type == "listen_and_type":
+                    print("  🔊 Listen-and-type exercise detected (Nhập từ còn thiếu)")
+                    human_sleep(0.3, 0.8)
+                    executed = handle_listen_and_type(page, result)
+                    if executed:
+                        handle_post_answer(page)
+                    continue
 
                 # Handle listening exercises separately
                 if q_type == "listening":
