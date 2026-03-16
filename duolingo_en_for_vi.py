@@ -1289,11 +1289,23 @@ def get_xp(page):
 
         page_text = page.inner_text("body")
 
+        # Debug: print relevant section of profile text
+        if 'Tổng điểm KN' in page_text:
+            idx = page_text.index('Tổng điểm KN')
+            print(f"    Profile text near XP: ...{repr(page_text[max(0,idx-60):idx+20])}...")
+
         # Find XP: match "NNN XP" (English) or "NNN\nTổng điểm KN" (Vietnamese)
         all_xp = re.findall(r'([\d,]+)\s*XP', page_text)
-        # Also match Vietnamese format: number followed by "Tổng điểm KN"
-        vi_xp = re.findall(r'([\d,]+)\s*\n?\s*Tổng điểm KN', page_text)
+        # Vietnamese: number before "Tổng điểm KN" (may have newlines/spaces between)
+        vi_xp = re.findall(r'([\d,]+)[\s\n]+Tổng điểm KN', page_text)
         all_xp.extend(vi_xp)
+        if not all_xp and 'Tổng điểm KN' in page_text:
+            # Grab all numbers near "Tổng điểm KN" — look within 50 chars before it
+            idx = page_text.index('Tổng điểm KN')
+            nearby = page_text[max(0, idx - 50):idx]
+            nums = re.findall(r'([\d,]+)', nearby)
+            if nums:
+                all_xp.append(nums[-1])  # closest number before the label
         if all_xp:
             xp_values = [int(v.replace(",", "")) for v in all_xp]
             print(f"    XP values found on profile: {xp_values}")

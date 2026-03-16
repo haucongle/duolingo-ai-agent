@@ -955,8 +955,14 @@ def get_xp(page):
 
         # Find XP: match "NNN XP" (English) or "NNN\nTổng điểm KN" (Vietnamese)
         all_xp = re.findall(r'([\d,]+)\s*XP', page_text)
-        vi_xp = re.findall(r'([\d,]+)\s*\n?\s*Tổng điểm KN', page_text)
+        vi_xp = re.findall(r'([\d,]+)[\s\n]+Tổng điểm KN', page_text)
         all_xp.extend(vi_xp)
+        if not all_xp and 'Tổng điểm KN' in page_text:
+            idx = page_text.index('Tổng điểm KN')
+            nearby = page_text[max(0, idx - 50):idx]
+            nums = re.findall(r'([\d,]+)', nearby)
+            if nums:
+                all_xp.append(nums[-1])
         if all_xp:
             xp_values = [int(v.replace(",", "")) for v in all_xp]
             print(f"    XP values found on profile: {xp_values}")
