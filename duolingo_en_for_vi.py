@@ -36,6 +36,9 @@ MAX_LESSONS = int(os.getenv("MAX_LESSONS", "0"))
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Answer cache: maps question text -> correct answer (learned from Duolingo feedback)
+answer_cache = {}
+
 PROMPT = """You are an AI agent that solves Duolingo exercises automatically.
 This is an English course for Vietnamese speakers. The UI may be in Vietnamese.
 
@@ -48,7 +51,7 @@ Look at this Duolingo screenshot and determine:
 Respond ONLY with valid JSON (no markdown, no explanation) using this format:
 
 {
-  "type": "image_choice | multiple_choice | word_bank | typing | matching | audio_matching | audio_fill_blank | listen_and_type | speaking | listening | tap_pairs | no_question",
+  "type": "image_choice | multiple_choice | checkbox | word_bank | typing | matching | audio_matching | audio_fill_blank | listen_and_type | speaking | listening | tap_pairs | no_question",
   "question": "brief description of the question",
   "answer": "the correct answer",
   "all_options": ["option1", "option2", "option3"],
@@ -70,6 +73,14 @@ Exercise types and how to answer:
 - multiple_choice: Text options to click. actions = [{"action": "click", "target": "exact option text"}]
   If options have number shortcuts (1, 2, 3...), prefer: actions = [{"action": "press", "key": "1"}]
   all_options = list of all option texts, total_options = number of options
+
+- checkbox: Reading comprehension with checkboxes — read a conversation/passage and check ALL correct answers.
+  Options have square checkboxes (not radio buttons). Multiple answers may be correct.
+  Click each correct option's text. actions = [{"action": "click", "target": "exact option text"}, ...]
+  all_options = list of all option texts, total_options = number of options
+  How to tell checkbox vs multiple_choice apart:
+  - checkbox: square checkboxes, often after a reading passage/conversation, multiple answers possible
+  - multiple_choice: round radio buttons or numbered options, only ONE answer
 
 - word_bank: Click words in the correct order from the word bank.
   actions = [{"action": "click", "target": "word1"}, {"action": "click", "target": "word2"}, ...]
@@ -123,11 +134,16 @@ Exercise types and how to answer:
   - audio_fill_blank: has numbered audio OPTION CARDS (1, 2) below the sentence → select one
   - listen_and_type: has a TEXT INPUT field below the sentence → type the missing word
 
-- listening: "Tap what you hear" - has a speaker button and a word bank below.
+- listening: "Tap what you hear" / "Nghe và điền" - has a speaker button and a word bank below.
+  The word bank has clickable word chips. You listen to the audio and click the words in the right order.
   DO NOT guess the answer. Just return the visible word bank options.
   actions = [] (will be handled by audio recognition)
   all_options = list ALL visible words/chips in the word bank (e.g. ["the", "is", "water", "and", "rice", "this"])
   total_options = number of words in the bank
+
+  How to tell listening vs listen_and_type apart:
+  - listening ("Nghe và điền"): has a WORD BANK with clickable word chips below the speaker → click words
+  - listen_and_type ("Nhập từ còn thiếu"): has a TEXT INPUT field with a sentence containing ___ → type missing word
 
 - speaking: "Đọc câu này" / "Read this sentence" - requires microphone to speak.
   Has a "NHẤN ĐỂ ĐỌC" (tap to speak) button. Cannot be solved by a bot.
@@ -354,11 +370,12 @@ def match_words_to_transcript(transcript, options):
     if not options or not transcript:
         return []
 
-    # Normalize transcript (remove punctuation, lowercase for comparison)
+    # Normalize transcript (remove punctuation for comparison)
     clean = transcript.replace("。", "").replace("，", "").replace(",", "").replace(".", "").strip()
 
     # Try to find a valid ordering of options that forms the transcript
     # Greedy approach: scan transcript left to right, match longest option first
+    # Use case-insensitive matching
     remaining = clean
     result = []
     available = list(options)
@@ -369,7 +386,8 @@ def match_words_to_transcript(transcript, options):
         sorted_opts = sorted(available, key=len, reverse=True)
         for opt in sorted_opts:
             clean_opt = opt.strip()
-            if remaining.startswith(clean_opt):
+            # Case-insensitive comparison
+            if remaining.lower().startswith(clean_opt.lower()):
                 result.append(opt)
                 remaining = remaining[len(clean_opt):]
                 available.remove(opt)
@@ -1026,7 +1044,11 @@ def type_answer(page, text):
             loc = page.locator(sel).first
             loc.click(timeout=300)
             # Check if there's pre-filled text and only type the remaining part
-            existing = loc.input_value(timeout=300)
+            try:
+                existing = loc.input_value(timeout=300)
+            except Exception:
+                # contenteditable elements don't support input_value
+                existing = loc.inner_text(timeout=300) or ""
             to_type = text
             if existing and text.lower().startswith(existing.lower()):
                 to_type = text[len(existing):]
@@ -1066,7 +1088,106 @@ def click_button(page, texts):
     return False
 
 
-def handle_post_answer(page):
+def capture_correct_answer(page, question_text=""):
+    """After clicking Check, capture the correct answer from Duolingo's feedback banner.
+
+    When you get a wrong answer, Duolingo shows a red banner with the correct answer like:
+      "Đáp án đúng:\nSome Vitamin A would really help your skin heal."
+    We capture this and cache it for future questions.
+    Returns the correct answer text if found, or None.
+    """
+    try:
+        # Try multiple selectors for the feedback banner
+        selectors = [
+            '[data-test="blame blame-incorrect"]',
+            '[data-test="blame"]',
+            '[data-test="challenge-judge-text"]',
+            '._3x0ok',
+            '.blame',
+            # The red/green banner at bottom of Duolingo lesson
+            'div[class*="incorrect"]',
+            'div[class*="blame"]',
+        ]
+
+        feedback_text = None
+        for sel in selectors:
+            try:
+                el = page.locator(sel).first
+                if el.is_visible(timeout=500):
+                    feedback_text = el.inner_text(timeout=500)
+                    if feedback_text and len(feedback_text.strip()) > 3:
+                        break
+            except Exception:
+                continue
+
+        # Fallback: search the entire bottom area for "Đáp án đúng" text
+        if not feedback_text:
+            try:
+                body_text = page.inner_text("body", timeout=500)
+                for keyword in ['Đáp án đúng:', 'Correct solution:', 'Correct answer:']:
+                    if keyword in body_text:
+                        idx = body_text.index(keyword)
+                        # Get the text after the keyword (up to 200 chars)
+                        after = body_text[idx:idx + 200]
+                        feedback_text = after
+                        break
+            except Exception:
+                pass
+
+        if not feedback_text:
+            return None
+
+        # Extract the correct answer from feedback text
+        correct = None
+        lines = feedback_text.strip().split('\n')
+
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            line_lower = line_stripped.lower()
+            # Look for keywords that precede the correct answer
+            if any(kw in line_lower for kw in [
+                'đáp án đúng', 'correct solution', 'correct answer',
+                'câu trả lời đúng'
+            ]):
+                # Answer might be after ":" on the same line
+                if ':' in line_stripped:
+                    after_colon = line_stripped.split(':', 1)[1].strip()
+                    if after_colon:
+                        correct = after_colon
+                        break
+                # Or on the next line
+                if i + 1 < len(lines) and lines[i + 1].strip():
+                    correct = lines[i + 1].strip()
+                    break
+
+        # Filter out non-answer text like "BÁO CÁO", "TIẾP TỤC"
+        if correct:
+            # Remove trailing UI buttons text
+            for noise in ['BÁO CÁO', 'TIẾP TỤC', 'CONTINUE', 'REPORT']:
+                correct = correct.replace(noise, '').strip()
+
+        # Don't cache generic exercise titles — they're not unique questions
+        GENERIC_TITLES = [
+            'nghe và điền', 'nhập từ còn thiếu', 'đọc câu này',
+            'chọn cặp từ', 'nghe và tìm từ còn thiếu',
+            'tap what you hear', 'type the missing word', 'read this sentence',
+            'select the matching pairs', 'listen and complete',
+        ]
+        is_generic = question_text.lower().strip() in GENERIC_TITLES
+
+        if correct and question_text and not is_generic:
+            answer_cache[question_text] = correct
+            print(f"  📝 Cached answer: '{question_text}' → '{correct}'")
+
+        return correct
+
+    except Exception:
+        pass
+
+    return None
+
+
+def handle_post_answer(page, question_text=""):
     """Click Check, Continue, or Next after answering."""
 
     human_sleep(0.5, 1.5)
@@ -1074,6 +1195,9 @@ def handle_post_answer(page):
     # Click CHECK / KIỂM TRA button
     click_button(page, ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"])
     human_sleep(0.3, 0.8)
+
+    # Capture correct answer from feedback (if wrong)
+    capture_correct_answer(page, question_text)
 
     # Click CONTINUE / TIẾP TỤC button (appears after check)
     click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
@@ -1732,13 +1856,51 @@ def main():
                 consecutive_no_question = 0
                 question_count += 1
 
+                q_text = result.get("question", "")
+
+                # Check answer cache first — if we've seen this question before, use cached answer
+                if q_text and q_text in answer_cache:
+                    cached = answer_cache[q_text]
+                    print(f"  💾 Found cached answer: '{cached}'")
+                    # Override the AI's answer with the cached one
+                    result["answer"] = cached
+                    # Update actions based on exercise type
+                    if q_type == "typing":
+                        result["actions"] = [{"action": "type", "target": "input", "value": cached}]
+                    elif q_type in ("multiple_choice", "image_choice"):
+                        # Find the correct option number by matching cached answer to all_options
+                        all_opts = result.get("all_options", [])
+                        cached_lower = cached.lower().strip()
+                        for idx, opt in enumerate(all_opts):
+                            if opt.lower().strip() == cached_lower:
+                                key = str(idx + 1)
+                                result["actions"] = [{"action": "press", "key": key}]
+                                print(f"  💾 Mapped cached answer to option {key}: '{opt}'")
+                                break
+                        else:
+                            # Partial match: cached answer contained in option or vice versa
+                            for idx, opt in enumerate(all_opts):
+                                if cached_lower in opt.lower() or opt.lower() in cached_lower:
+                                    key = str(idx + 1)
+                                    result["actions"] = [{"action": "press", "key": key}]
+                                    print(f"  💾 Partial match to option {key}: '{opt}'")
+                                    break
+                            else:
+                                # Fallback: click by text
+                                result["actions"] = [{"action": "click", "target": cached}]
+                                print(f"  💾 No option match, will click text: '{cached}'")
+                    elif q_type == "word_bank":
+                        # Split cached answer into words and click them
+                        words = cached.split()
+                        result["actions"] = [{"action": "click", "target": w} for w in words]
+
                 # Handle audio matching exercises (Chọn cặp từ with audio)
                 if q_type == "audio_matching":
                     print("  🔊 Audio matching exercise detected (Chọn cặp từ)")
                     human_sleep(0.3, 0.8)
                     executed = handle_audio_matching(page, result)
                     if executed:
-                        handle_post_answer(page)
+                        handle_post_answer(page, q_text)
                     continue
 
                 # Handle speaking exercises (Đọc câu này) — skip, no mic
@@ -1746,7 +1908,7 @@ def main():
                     print("  🎤 Speaking exercise detected (Đọc câu này) — skipping (no mic)")
                     skip_if_stuck(page)
                     human_sleep(0.5, 1.0)
-                    handle_post_answer(page)
+                    handle_post_answer(page, q_text)
                     continue
 
                 # Handle audio fill-in-the-blank (Nghe và tìm từ còn thiếu)
@@ -1755,7 +1917,7 @@ def main():
                     human_sleep(0.3, 0.8)
                     executed = handle_audio_fill_blank(page, result)
                     if executed:
-                        handle_post_answer(page)
+                        handle_post_answer(page, q_text)
                     continue
 
                 # Handle listen-and-type (Nhập từ còn thiếu)
@@ -1764,7 +1926,7 @@ def main():
                     human_sleep(0.3, 0.8)
                     executed = handle_listen_and_type(page, result)
                     if executed:
-                        handle_post_answer(page)
+                        handle_post_answer(page, q_text)
                     continue
 
                 # Handle listening exercises separately
@@ -1773,7 +1935,7 @@ def main():
                     human_sleep(0.3, 0.8)
                     executed = handle_listening(page, result)
                     if executed:
-                        handle_post_answer(page)
+                        handle_post_answer(page, q_text)
                     continue
 
                 # Decide if we should answer wrong (for human simulation)
@@ -1781,7 +1943,7 @@ def main():
                 force_wrong = (
                     not in_practice_mode
                     and wrong_count < MAX_WRONG_PER_LESSON
-                    and q_type not in ("matching", "tap_pairs")
+                    and q_type not in ("matching", "tap_pairs", "checkbox")
                     and should_answer_wrong()
                 )
 
@@ -1803,14 +1965,14 @@ def main():
                 executed = execute_actions(page, result, force_wrong=force_wrong)
 
                 if executed:
-                    handle_post_answer(page)
+                    handle_post_answer(page, q_text)
                     if force_wrong:
                         wrong_count += 1
                         print(f"  ❌ Wrong answers so far: {wrong_count}/{MAX_WRONG_PER_LESSON}")
                         # After wrong answer, Duolingo shows correct answer
                         # Need to click Continue again
                         human_sleep(0.3, 0.8)
-                        click_button(page, ["Continue", "CONTINUE"])
+                        click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
                         human_sleep(0.5, 1.5)
                 else:
                     print("  No actions executed, skipping...")

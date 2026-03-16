@@ -695,7 +695,10 @@ def type_answer(page, text):
             loc = page.locator(sel).first
             loc.click(timeout=300)
             # Check if there's pre-filled text and only type the remaining part
-            existing = loc.input_value(timeout=300)
+            try:
+                existing = loc.input_value(timeout=300)
+            except Exception:
+                existing = loc.inner_text(timeout=300) or ""
             to_type = text
             if existing and text.lower().startswith(existing.lower()):
                 to_type = text[len(existing):]
