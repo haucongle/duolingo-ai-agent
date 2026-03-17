@@ -1834,7 +1834,7 @@ def main():
                             pass
                         raise Exception(f"No questions found. URL: {page.url}")
 
-                    if is_on_learn_page or (consecutive_no_question >= 3 and question_count > 0):
+                    if is_on_learn_page or (consecutive_no_question >= 5 and question_count > 0):
                         if is_on_learn_page:
                             print("  ✅ Lesson complete! (back on learn page)")
                         else:
