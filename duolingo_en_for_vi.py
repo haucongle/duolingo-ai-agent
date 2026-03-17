@@ -1015,12 +1015,17 @@ def click_target(page, text):
 def click_target_generic(page, text):
     """Generic click fallback using CSS selectors."""
 
-    TIMEOUT = 300
+    TIMEOUT = 2000
 
     selectors = [
         f'[data-test="challenge-choice"]:has-text("{text}")',
+        f'[data-test="challenge-judge-text"]:has-text("{text}")',
+        f'label:has-text("{text}")',
+        f'div[role="checkbox"]:has-text("{text}")',
+        f'div[role="radio"]:has-text("{text}")',
         f'button:has-text("{text}")',
         f'div[role="button"]:has-text("{text}")',
+        f'span:has-text("{text}")',
     ]
 
     for sel in selectors:
