@@ -47,7 +47,7 @@ Look at this Duolingo screenshot and determine:
 Respond ONLY with valid JSON (no markdown, no explanation) using this format:
 
 {
-  "type": "image_choice | multiple_choice | word_bank | typing | matching | listening | tap_pairs | no_question",
+  "type": "image_choice | multiple_choice | word_bank | typing | matching | listening | tap_pairs | tracing | no_question",
   "question": "brief description of the question",
   "answer": "the correct answer",
   "all_options": ["option1", "option2", "option3"],
@@ -89,6 +89,10 @@ Exercise types and how to answer:
   actions = [] (will be handled by audio recognition)
   all_options = list ALL visible words/chips in the word bank (e.g. ["粥", "水", "这是", "豆腐", "米饭", "和"])
   total_options = number of words in the bank
+
+- tracing: "Trace the character" — draw/trace a Chinese character by following the blue dashed line.
+  Cannot be automated. actions = []
+  all_options = [], total_options = 0
 
 - no_question: No exercise visible (loading, result screen, etc). actions = []
   all_options = [], total_options = 0
@@ -1390,6 +1394,14 @@ def main():
 
                 consecutive_no_question = 0
                 question_count += 1
+
+                # Handle tracing exercises — skip (cannot automate mouse drawing)
+                if q_type == "tracing":
+                    print("  ✏️ Tracing exercise detected — skipping (cannot automate)")
+                    click_button(page, ["Skip", "SKIP", "BỎ QUA"])
+                    human_sleep(0.5, 1.0)
+                    handle_post_answer(page)
+                    continue
 
                 # Handle listening exercises separately
                 if q_type == "listening":
