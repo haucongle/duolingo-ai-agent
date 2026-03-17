@@ -1772,7 +1772,7 @@ def main():
         while True:
             try:
                 # Wait for page to fully render before capturing
-                human_sleep(1.0, 2.0)
+                human_sleep(2.0, 4.0)
 
                 print("\n📸 Capturing screen...")
                 img = page.screenshot(type="jpeg", quality=80)
