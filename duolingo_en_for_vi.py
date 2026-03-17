@@ -634,9 +634,18 @@ def handle_audio_fill_blank(page, result):
 
 
 def handle_listen_and_type(page, result):
-    """Handle 'Nhập từ còn thiếu' — listen to audio, find missing word, type it."""
+    """Handle 'Nhập từ còn thiếu' or 'Nhập lại nội dung bạn vừa nghe' — listen and type."""
     sentence = result.get("sentence", "") or result.get("question", "")
     print(f"  Sentence: {sentence}")
+
+    # Detect dictation mode: "Nhập lại nội dung bạn vừa nghe" or "Nghe và điền" without blanks
+    is_dictation = any(kw in sentence for kw in [
+        "Nhập lại nội dung", "nội dung bạn vừa nghe",
+        "Type what you hear", "Write what you hear",
+    ])
+    # Also dictation if sentence has no blank indicator
+    if not is_dictation and "___" not in sentence and "_" not in sentence:
+        is_dictation = True
 
     # Step 1: Listen to the full sentence via speaker button
     full_transcript = None
@@ -659,6 +668,12 @@ def handle_listen_and_type(page, result):
         return False
 
     print(f"  Full sentence: '{full_transcript}'")
+
+    # Dictation mode: type the entire transcript as-is
+    if is_dictation:
+        print(f"  📝 Dictation mode — typing full sentence: '{full_transcript}'")
+        type_answer(page, full_transcript)
+        return True
 
     # Step 2: Find the missing word by comparing transcript with the sentence
     missing_word = None
@@ -688,7 +703,6 @@ def handle_listen_and_type(page, result):
         clean = lambda s: re.sub(r'[^\w\s\']', '', s.lower().replace("___", ""))
         sentence_words = clean(sentence).split()
         transcript_words = clean(full_transcript).split()
-        # Remove each sentence word from transcript words (preserving order, handling duplicates)
         remaining = list(transcript_words)
         for sw in sentence_words:
             if sw in remaining:
@@ -994,7 +1008,8 @@ def click_target(page, text):
     if click_word_token(page, text):
         return True
 
-    return False
+    # Fallback to generic click (for checkbox, multiple_choice, etc.)
+    return click_target_generic(page, text)
 
 
 def click_target_generic(page, text):
