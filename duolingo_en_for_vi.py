@@ -1428,28 +1428,36 @@ def get_xp(page):
 
         page_text = page.inner_text("body")
 
-        # Debug: print relevant section of profile text
-        if 'Tổng điểm KN' in page_text:
-            idx = page_text.index('Tổng điểm KN')
-            print(f"    Profile text near XP: ...{repr(page_text[max(0,idx-60):idx+20])}...")
+        # Find XP: prioritize "Total XP" / "Tổng điểm KN" label (not achievement text)
+        xp_found = False
 
-        # Find XP: match "NNN XP" (English) or "NNN\nTổng điểm KN" (Vietnamese)
-        all_xp = re.findall(r'([\d,]+)\s*XP', page_text)
-        # Vietnamese: number before "Tổng điểm KN" (may have newlines/spaces between)
-        vi_xp = re.findall(r'([\d,]+)[\s\n]+Tổng điểm KN', page_text)
-        all_xp.extend(vi_xp)
-        if not all_xp and 'Tổng điểm KN' in page_text:
-            # Grab all numbers near "Tổng điểm KN" — look within 50 chars before it
+        # 1. English: number right before "Total XP"
+        total_xp_match = re.search(r'([\d,]+)[\s\n]+Total XP', page_text)
+        if total_xp_match:
+            xp = int(total_xp_match.group(1).replace(",", ""))
+            print(f"    XP from 'Total XP': {xp}")
+            xp_found = True
+
+        # 2. Vietnamese: number right before "Tổng điểm KN"
+        if not xp_found:
+            vi_match = re.search(r'([\d,]+)[\s\n]+Tổng điểm KN', page_text)
+            if vi_match:
+                xp = int(vi_match.group(1).replace(",", ""))
+                print(f"    XP from 'Tổng điểm KN': {xp}")
+                xp_found = True
+
+        # 3. Vietnamese fallback: search nearby text
+        if not xp_found and 'Tổng điểm KN' in page_text:
             idx = page_text.index('Tổng điểm KN')
             nearby = page_text[max(0, idx - 50):idx]
             nums = re.findall(r'([\d,]+)', nearby)
             if nums:
-                all_xp.append(nums[-1])  # closest number before the label
-        if all_xp:
-            xp_values = [int(v.replace(",", "")) for v in all_xp]
-            print(f"    XP values found on profile: {xp_values}")
-            # Take the largest value (total XP)
-            xp = max(xp_values)
+                xp = int(nums[-1].replace(",", ""))
+                print(f"    XP from nearby 'Tổng điểm KN': {xp}")
+                xp_found = True
+
+        if not xp_found:
+            print(f"    ⚠ Could not find XP on profile page")
 
         # Match streak: "1 day streak" (English) or "NNN\nNgày streak" (Vietnamese)
         streak_match = re.search(r'(\d+)\s*day\s*streak', page_text, re.IGNORECASE)
