@@ -742,6 +742,56 @@ def click_button(page, texts):
     return False
 
 
+def check_answer_feedback(page):
+    """Detect if the answer was correct or incorrect after clicking Check.
+    Logs the result and returns (is_correct, correct_answer_or_None).
+    """
+    try:
+        # Check for incorrect banner
+        try:
+            el = page.locator('[data-test*="blame-incorrect"]').first
+            if el.is_visible(timeout=1000):
+                feedback = el.inner_text(timeout=500).strip()
+                correct_answer = None
+                for keyword in ['Correct solution:', 'Correct answer:']:
+                    if keyword in feedback:
+                        after = feedback.split(keyword, 1)[1].strip()
+                        lines = after.split('\n')
+                        if lines:
+                            correct_answer = lines[0].strip()
+                            for noise in ['REPORT', 'CONTINUE']:
+                                correct_answer = correct_answer.replace(noise, '').strip()
+                        break
+                if correct_answer:
+                    print(f"  ❌ Incorrect! Correct answer: {correct_answer}")
+                else:
+                    print(f"  ❌ Incorrect!")
+                return False, correct_answer
+        except Exception:
+            pass
+
+        # Fallback: check body text for incorrect keywords
+        try:
+            body = page.inner_text("body", timeout=500)
+            for keyword in ['Correct solution:', 'Correct answer:']:
+                if keyword in body:
+                    after = body.split(keyword, 1)[1].strip().split('\n')[0].strip()
+                    for noise in ['REPORT', 'CONTINUE']:
+                        after = after.replace(noise, '').strip()
+                    if after:
+                        print(f"  ❌ Incorrect! Correct answer: {after}")
+                        return False, after
+                    print(f"  ❌ Incorrect!")
+                    return False, None
+        except Exception:
+            pass
+
+        print(f"  ✅ Correct!")
+        return True, None
+    except Exception:
+        return True, None
+
+
 def handle_post_answer(page):
     """Click Check, Continue, or Next after answering."""
 
@@ -750,6 +800,8 @@ def handle_post_answer(page):
     # Click CHECK / KIỂM TRA button
     click_button(page, ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"])
     human_sleep(0.3, 0.8)
+
+    check_answer_feedback(page)
 
     # Click CONTINUE button (appears after check)
     click_button(page, ["Continue", "CONTINUE"])

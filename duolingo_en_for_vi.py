@@ -633,9 +633,68 @@ def handle_audio_fill_blank(page, result):
     return True
 
 
+def get_input_prefix(page):
+    """Read the pre-filled text from the input field (Duolingo often pre-fills a prefix)."""
+    selectors = [
+        '[data-test="challenge-text-input"]',
+        'input[type="text"]',
+        'textarea',
+        '[contenteditable="true"]',
+    ]
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if loc.is_visible(timeout=300):
+                try:
+                    val = loc.input_value(timeout=300)
+                except Exception:
+                    val = loc.inner_text(timeout=300) or ""
+                if val and val.strip():
+                    return val.strip()
+        except Exception:
+            continue
+    return ""
+
+
+def extract_missing_from_cached(sentence, cached_answer):
+    """Extract the missing word from a cached full sentence answer.
+    E.g. sentence='I hope my new ___ is faster by train.'
+         cached='I hope my new commute is faster by train.'
+         returns 'commute'
+    """
+    if not sentence or not cached_answer:
+        return None
+
+    blank_pattern = re.compile(r'_+')
+    match = blank_pattern.search(sentence)
+    if not match:
+        return None
+
+    before = sentence[:match.start()].strip()
+    after = sentence[match.end():].strip()
+
+    before_clean = re.sub(r'[^\w\s]', '', before).strip().lower()
+    after_clean = re.sub(r'[^\w\s]', '', after).strip().lower()
+    cached_clean = cached_answer.strip()
+
+    if before_clean:
+        idx = cached_clean.lower().find(before_clean)
+        if idx >= 0:
+            start = idx + len(before_clean)
+            remaining = cached_clean[start:].strip()
+            if after_clean:
+                end_idx = remaining.lower().find(after_clean)
+                if end_idx >= 0:
+                    return remaining[:end_idx].strip()
+            return remaining.strip().rstrip('.')
+
+    return None
+
+
 def handle_listen_and_type(page, result):
     """Handle 'Nhập từ còn thiếu' or 'Nhập lại nội dung bạn vừa nghe' — listen and type."""
     sentence = result.get("sentence", "") or result.get("question", "")
+    cached_answer = result.get("answer", "")
     print(f"  Sentence: {sentence}")
 
     # Detect dictation mode: "Nhập lại nội dung bạn vừa nghe" or "Nghe và điền" without blanks
@@ -643,63 +702,83 @@ def handle_listen_and_type(page, result):
         "Nhập lại nội dung", "nội dung bạn vừa nghe",
         "Type what you hear", "Write what you hear",
     ])
-    # Also dictation if sentence has no blank indicator
     if not is_dictation and "___" not in sentence and "_" not in sentence:
         is_dictation = True
 
-    # Step 1: Listen to the full sentence via speaker button
+    # Read pre-filled prefix from the input field (Duolingo often shows e.g. "comm" for "commute")
+    prefix = get_input_prefix(page)
+    if prefix:
+        print(f"  Pre-filled prefix in input: '{prefix}'")
+
+    # Step 1: Try to get the missing word from cached answer first
+    missing_word = None
+    if not is_dictation and cached_answer and sentence:
+        missing_word = extract_missing_from_cached(sentence, cached_answer)
+        if missing_word:
+            print(f"  Missing word (from cache): '{missing_word}'")
+            if prefix and not missing_word.lower().startswith(prefix.lower()):
+                print(f"  ⚠ Cached word '{missing_word}' doesn't match prefix '{prefix}', discarding")
+                missing_word = None
+
+    # Step 2: If no cached answer, listen to the full sentence via speaker button
     full_transcript = None
-    if HAS_AUDIO:
-        recording = start_recording(duration=5.0)
-        if recording:
-            time.sleep(0.3)
-            click_speaker(page)
-            audio_path = finish_recording(recording)
-            if audio_path:
-                full_transcript = transcribe_audio(audio_path)
-                try:
-                    os.remove(audio_path)
-                except Exception:
-                    pass
+    if not missing_word and (is_dictation or not cached_answer):
+        if HAS_AUDIO:
+            recording = start_recording(duration=5.0)
+            if recording:
+                time.sleep(0.3)
+                click_speaker(page)
+                audio_path = finish_recording(recording)
+                if audio_path:
+                    full_transcript = transcribe_audio(audio_path)
+                    try:
+                        os.remove(audio_path)
+                    except Exception:
+                        pass
 
-    if not full_transcript:
-        print("  ⚠ Could not transcribe audio, skipping...")
-        skip_if_stuck(page)
-        return False
+        if not full_transcript and not missing_word:
+            print("  ⚠ Could not transcribe audio, skipping...")
+            skip_if_stuck(page)
+            return False
 
-    print(f"  Full sentence: '{full_transcript}'")
+        if full_transcript:
+            print(f"  Full sentence: '{full_transcript}'")
 
     # Dictation mode: type the entire transcript as-is
     if is_dictation:
-        print(f"  📝 Dictation mode — typing full sentence: '{full_transcript}'")
-        type_answer(page, full_transcript)
-        return True
+        text = full_transcript or cached_answer
+        if text:
+            print(f"  📝 Dictation mode — typing full sentence: '{text}'")
+            type_answer(page, text)
+            return True
+        print("  ⚠ No text for dictation, skipping...")
+        skip_if_stuck(page)
+        return False
 
-    # Step 2: Find the missing word by comparing transcript with the sentence
-    missing_word = None
-
-    # Use GPT to extract the missing word
-    if sentence:
+    # Step 3: Extract missing word via GPT if not already found
+    if not missing_word and full_transcript and sentence:
+        prompt_parts = [
+            f'A Duolingo exercise shows this sentence with a blank: "{sentence}"',
+            f'The full spoken sentence is: "{full_transcript}"',
+        ]
+        if prefix:
+            prompt_parts.append(f'The blank already has a pre-filled prefix: "{prefix}"')
+        prompt_parts.append(
+            'What is the missing word or phrase that fills the blank? '
+            'Reply with ONLY the missing word(s), nothing else.'
+        )
         try:
             r = client.responses.create(
                 model="gpt-4o-mini",
-                input=[{
-                    "role": "user",
-                    "content": (
-                        f'A Duolingo exercise shows this sentence with a blank: "{sentence}"\n'
-                        f'The full spoken sentence is: "{full_transcript}"\n'
-                        f'What is the missing word or phrase that fills the blank? '
-                        f'Reply with ONLY the missing word(s), nothing else.'
-                    ),
-                }],
+                input=[{"role": "user", "content": "\n".join(prompt_parts)}],
             )
             missing_word = r.output_text.strip().strip('"').strip("'").rstrip(".")
-            print(f"  Missing word: '{missing_word}'")
+            print(f"  Missing word (GPT): '{missing_word}'")
         except Exception as e:
             print(f"  ⚠ GPT extraction failed: {e}")
 
-    if not missing_word:
-        # Fallback: simple diff — find words in transcript not in sentence
+    # Fallback: simple diff
+    if not missing_word and full_transcript and sentence:
         clean = lambda s: re.sub(r'[^\w\s\']', '', s.lower().replace("___", ""))
         sentence_words = clean(sentence).split()
         transcript_words = clean(full_transcript).split()
@@ -711,14 +790,24 @@ def handle_listen_and_type(page, result):
             missing_word = " ".join(remaining)
             print(f"  Fallback missing word: '{missing_word}'")
 
+    # Validate against prefix
+    if missing_word and prefix and not missing_word.lower().startswith(prefix.lower()):
+        print(f"  ⚠ Missing word '{missing_word}' doesn't match prefix '{prefix}'")
+        missing_word = None
+
     if not missing_word:
         print("  ⚠ Could not find missing word, skipping...")
         skip_if_stuck(page)
         return False
 
-    # Step 3: Type the missing word
-    print(f"  Typing missing word: '{missing_word}'")
-    type_answer(page, missing_word)
+    # Step 4: Type only the remaining characters after the prefix
+    if prefix and missing_word.lower().startswith(prefix.lower()):
+        remaining_text = missing_word[len(prefix):]
+        print(f"  Typing remaining after prefix '{prefix}': '{remaining_text}'")
+        type_answer(page, missing_word)
+    else:
+        print(f"  Typing missing word: '{missing_word}'")
+        type_answer(page, missing_word)
 
     return True
 
@@ -1216,8 +1305,31 @@ def handle_post_answer(page, question_text=""):
     click_button(page, ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"])
     human_sleep(0.3, 0.8)
 
-    # Capture correct answer from feedback (if wrong)
-    capture_correct_answer(page, question_text)
+    # Capture correct answer from feedback (if wrong) and log result
+    correct_answer = capture_correct_answer(page, question_text)
+    if correct_answer:
+        print(f"  ❌ Incorrect! Correct answer: {correct_answer}")
+    else:
+        # Fallback: check if incorrect banner is visible but answer couldn't be extracted
+        is_incorrect = False
+        try:
+            el = page.locator('[data-test*="blame-incorrect"]').first
+            is_incorrect = el.is_visible(timeout=300)
+        except Exception:
+            pass
+        if not is_incorrect:
+            try:
+                body = page.inner_text("body", timeout=300)
+                for kw in ['Đáp án đúng:', 'Correct solution:', 'Correct answer:']:
+                    if kw in body:
+                        is_incorrect = True
+                        break
+            except Exception:
+                pass
+        if is_incorrect:
+            print(f"  ❌ Incorrect!")
+        else:
+            print(f"  ✅ Correct!")
 
     # Click CONTINUE / TIẾP TỤC button (appears after check)
     click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
