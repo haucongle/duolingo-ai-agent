@@ -56,6 +56,8 @@ Respond ONLY with valid JSON (no markdown, no explanation) using this format:
   "answer": "the correct answer",
   "all_options": ["option1", "option2", "option3"],
   "total_options": 3,
+  "sentence": "(for listen_and_type/audio_fill_blank) the sentence with ___ for the blank",
+  "prefix": "(for listen_and_type/audio_fill_blank) any pre-filled letters visible in the blank, e.g. 'su' or 'comm'. Empty string if none.",
   "actions": [
     {"action": "click", "target": "exact text of the button/word to click"},
     {"action": "type", "target": "selector description", "value": "text to type"},
@@ -126,8 +128,11 @@ Exercise types and how to answer:
   A sentence with a blank (___) is shown, plus a TEXT INPUT field to type in, and speaker buttons to hear the audio.
   There are NO numbered audio option cards — just speaker buttons and a text input.
   You CANNOT hear the audio. Return type="listen_and_type".
+  IMPORTANT: The blank/input field often has a PRE-FILLED PREFIX (e.g. "su" for "suburbs", "comm" for "commute").
+  Look carefully at the text inside the input field — if there are any letters already shown, include them in "prefix".
   actions = [] (will be handled by audio recognition + typing)
   sentence = "I don't have any ___." (the sentence with the blank, use ___ for the blank)
+  prefix = "su" (the pre-filled letters visible in the input field, or "" if none)
   all_options = [], total_options = 0
 
   How to tell audio_fill_blank vs listen_and_type apart:
@@ -634,25 +639,83 @@ def handle_audio_fill_blank(page, result):
 
 
 def get_input_prefix(page):
-    """Read the pre-filled text from the input field (Duolingo often pre-fills a prefix)."""
-    selectors = [
+    """Read the pre-filled prefix from the blank area.
+    Duolingo often shows a prefix like 'su' for 'suburbs' inside or next to the input field.
+    The prefix may be in the input value, a placeholder, or a sibling span element.
+    """
+    input_selectors = [
         '[data-test="challenge-text-input"]',
         'input[type="text"]',
         'textarea',
         '[contenteditable="true"]',
     ]
-    for sel in selectors:
+
+    for sel in input_selectors:
         try:
             loc = page.locator(sel).first
-            if loc.is_visible(timeout=300):
-                try:
-                    val = loc.input_value(timeout=300)
-                except Exception:
-                    val = loc.inner_text(timeout=300) or ""
+            if not loc.is_visible(timeout=300):
+                continue
+
+            # Check input value
+            try:
+                val = loc.input_value(timeout=300)
                 if val and val.strip():
                     return val.strip()
+            except Exception:
+                pass
+
+            # Check inner text (for contenteditable)
+            try:
+                val = loc.inner_text(timeout=300)
+                if val and val.strip():
+                    return val.strip()
+            except Exception:
+                pass
+
+            # Check placeholder attribute
+            try:
+                val = loc.get_attribute("placeholder", timeout=300)
+                if val and val.strip() and not val.strip().startswith("…"):
+                    return val.strip()
+            except Exception:
+                pass
+
+            # Check sibling/parent span elements for prefix text
+            # Duolingo often renders prefix in a <span> adjacent to the input
+            try:
+                parent = loc.locator("..")
+                spans = parent.locator("span")
+                count = spans.count()
+                for i in range(min(count, 5)):
+                    span_text = spans.nth(i).inner_text(timeout=200).strip()
+                    if span_text and len(span_text) <= 10 and span_text.isalpha():
+                        return span_text
+            except Exception:
+                pass
+
         except Exception:
             continue
+
+    # Broader search: look for spans inside the challenge input area
+    container_selectors = [
+        '[data-test="challenge-translate-input"]',
+        '[data-test="challenge-input"]',
+        '[class*="challenge"] [class*="input"]',
+    ]
+    for sel in container_selectors:
+        try:
+            container = page.locator(sel).first
+            if not container.is_visible(timeout=300):
+                continue
+            spans = container.locator("span")
+            count = spans.count()
+            for i in range(min(count, 5)):
+                span_text = spans.nth(i).inner_text(timeout=200).strip()
+                if span_text and len(span_text) <= 10 and span_text.isalpha():
+                    return span_text
+        except Exception:
+            continue
+
     return ""
 
 
@@ -705,10 +768,14 @@ def handle_listen_and_type(page, result):
     if not is_dictation and "___" not in sentence and "_" not in sentence:
         is_dictation = True
 
-    # Read pre-filled prefix from the input field (Duolingo often shows e.g. "comm" for "commute")
+    # Read pre-filled prefix — try DOM first, then fall back to GPT's response
     prefix = get_input_prefix(page)
+    if not prefix:
+        prefix = result.get("prefix", "")
     if prefix:
-        print(f"  Pre-filled prefix in input: '{prefix}'")
+        print(f"  Pre-filled prefix: '{prefix}'")
+    else:
+        print(f"  ⚠ No pre-filled prefix detected")
 
     # Step 1: Try to get the missing word from cached answer first
     missing_word = None
@@ -756,13 +823,17 @@ def handle_listen_and_type(page, result):
         return False
 
     # Step 3: Extract missing word via GPT if not already found
-    if not missing_word and full_transcript and sentence:
+    if not missing_word and sentence:
         prompt_parts = [
             f'A Duolingo exercise shows this sentence with a blank: "{sentence}"',
-            f'The full spoken sentence is: "{full_transcript}"',
         ]
+        if full_transcript and full_transcript.strip() not in ('', '.', '. .', '...'):
+            prompt_parts.append(f'The full spoken sentence is: "{full_transcript}"')
         if prefix:
-            prompt_parts.append(f'The blank already has a pre-filled prefix: "{prefix}"')
+            prompt_parts.append(
+                f'The blank already has a pre-filled prefix: "{prefix}". '
+                f'The missing word MUST start with "{prefix}".'
+            )
         prompt_parts.append(
             'What is the missing word or phrase that fills the blank? '
             'Reply with ONLY the missing word(s), nothing else.'
@@ -803,8 +874,11 @@ def handle_listen_and_type(page, result):
     # Step 4: Type only the remaining characters after the prefix
     if prefix and missing_word.lower().startswith(prefix.lower()):
         remaining_text = missing_word[len(prefix):]
-        print(f"  Typing remaining after prefix '{prefix}': '{remaining_text}'")
-        type_answer(page, missing_word)
+        if remaining_text:
+            print(f"  Typing remaining after prefix '{prefix}': '{remaining_text}'")
+            type_answer(page, remaining_text)
+        else:
+            print(f"  Word '{missing_word}' already fully pre-filled")
     else:
         print(f"  Typing missing word: '{missing_word}'")
         type_answer(page, missing_word)
