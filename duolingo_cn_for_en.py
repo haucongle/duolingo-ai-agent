@@ -1465,9 +1465,12 @@ def main():
                 # Handle tracing exercises — skip (cannot automate mouse drawing)
                 if q_type == "tracing":
                     print("  ✏️ Tracing exercise detected — skipping (cannot automate)")
-                    click_button(page, ["Skip", "SKIP", "BỎ QUA"])
+                    # Click Skip (not Check — tracing doesn't need checking)
+                    click_button(page, ["Skip", "SKIP", "BỎ QUA", "CAN'T USE KEYBOARD"])
+                    human_sleep(0.8, 1.5)
+                    # Duolingo shows the answer after skip, then Continue
+                    click_button(page, ["Continue", "CONTINUE"])
                     human_sleep(0.5, 1.0)
-                    handle_post_answer(page)
                     continue
 
                 # Handle listening exercises separately
