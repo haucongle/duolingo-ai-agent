@@ -21,6 +21,10 @@ except ImportError:
 
 load_dotenv()
 
+if os.getenv("NO_AUDIO", "").lower() in ("true", "1", "yes"):
+    HAS_AUDIO = False
+    print("⚠ Audio disabled via NO_AUDIO env var. Listening exercises will be skipped.")
+
 EMAIL = os.getenv("DUO_EMAIL")
 PASSWORD = os.getenv("DUO_PASSWORD")
 DUO_JWT = os.getenv("DUO_JWT")  # Optional: pre-authenticated JWT token
@@ -297,7 +301,7 @@ def handle_listening(page, result):
 
     print(f"  Click order: {words_to_click}")
     for word in words_to_click:
-        human_sleep(0.3, 0.8)
+        human_sleep(0.1, 0.3)
         click_target(page, word)
 
     # Clean up temp file
@@ -452,13 +456,11 @@ def execute_actions(page, result, force_wrong=False):
         value = act.get("value", "")
         key = act.get("key", "")
 
-        # Random delay between actions (human-like)
         if i > 0:
             if is_matching and i % 2 == 0:
-                # Longer pause between pairs (thinking about next pair)
-                human_sleep(0.3, 0.8)
+                human_sleep(0.15, 0.35)
             else:
-                human_sleep(0.5, 1.2)
+                human_sleep(0.15, 0.4)
 
         if action == "press":
             print(f"  [{i+1}] Pressing key: '{key}'")
@@ -467,8 +469,7 @@ def execute_actions(page, result, force_wrong=False):
         elif action == "click":
             print(f"  [{i+1}] Clicking: '{target}'")
             click_target(page, target)
-            # Extra wait after click for DOM to update (word moves to answer area)
-            time.sleep(0.3)
+            time.sleep(0.15)
 
         elif action == "type":
             print(f"  [{i+1}] Typing: '{value}'")
@@ -714,16 +715,15 @@ def type_answer(page, text):
             elif existing:
                 # Pre-filled text doesn't match answer, clear and retype
                 loc.fill("")
-            # Type character by character with random delays (human-like)
             for char in to_type:
-                loc.type(char, delay=random.randint(30, 120))
+                loc.type(char, delay=random.randint(15, 50))
             return True
         except Exception:
             continue
 
     # Fallback: press keys directly
     try:
-        page.keyboard.type(text, delay=random.randint(40, 100))
+        page.keyboard.type(text, delay=random.randint(15, 50))
         return True
     except Exception:
         print(f"  ⚠ Could not type answer")
@@ -795,17 +795,17 @@ def check_answer_feedback(page):
 def handle_post_answer(page):
     """Click Check, Continue, or Next after answering."""
 
-    human_sleep(0.5, 1.5)
+    human_sleep(0.2, 0.5)
 
     # Click CHECK / KIỂM TRA button
     click_button(page, ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"])
-    human_sleep(0.3, 0.8)
+    human_sleep(0.2, 0.5)
 
     check_answer_feedback(page)
 
     # Click CONTINUE button (appears after check)
     click_button(page, ["Continue", "CONTINUE"])
-    human_sleep(0.5, 1.5)
+    human_sleep(0.3, 0.6)
 
 
 def skip_if_stuck(page):
@@ -841,16 +841,15 @@ def click_start_xp_button(page):
             el = attempt()
             el.click(timeout=3000)
             print(f"  Clicked 'START +XP' button")
-            human_sleep(0.5, 1.5)
+            human_sleep(0.2, 0.5)
             return True
         except Exception:
             continue
 
-    # Last resort: screenshot and log for debugging
     print("  ⚠ Could not find 'START +XP' button, trying keyboard Enter...")
     try:
         page.keyboard.press("Enter")
-        human_sleep(0.5, 1.5)
+        human_sleep(0.2, 0.5)
         return True
     except Exception:
         return False
@@ -907,18 +906,15 @@ def start_lesson(page):
     """Auto-detect and start the next available lesson."""
 
     print("Looking for a lesson to start...")
-    human_sleep(0.3, 0.8)
+    human_sleep(0.2, 0.4)
 
-    # Check if out of hearts
     if check_no_hearts(page):
         print("  💔 Out of hearts! Switching to practice mode...")
-        # Close popup first
         click_button(page, ["NO THANKS", "No thanks", "CLOSE", "Close", "✕"])
-        human_sleep(0.5, 1.0)
+        human_sleep(0.2, 0.4)
         start_practice_mode(page)
         return True
 
-    # Step 1: Click the "START" label above the active lesson icon
     start_texts = ["START", "Start"]
     clicked_start = False
 
@@ -928,13 +924,12 @@ def start_lesson(page):
             loc.click(timeout=2000)
             print(f"  Clicked '{text}' on learn page")
             clicked_start = True
-            human_sleep(0.3, 1.0)
+            human_sleep(0.2, 0.4)
             break
         except Exception:
             continue
 
     if not clicked_start:
-        # Fallback: try data-test selectors for the active node
         fallback_selectors = [
             '[data-test="skill-path"] [aria-current="true"]',
             '[data-test="start-button"]',
@@ -945,7 +940,7 @@ def start_lesson(page):
                 loc.click(timeout=1500)
                 print(f"  Clicked: {sel}")
                 clicked_start = True
-                human_sleep(0.3, 1.0)
+                human_sleep(0.2, 0.4)
                 break
             except Exception:
                 continue
@@ -967,7 +962,7 @@ def start_lesson(page):
             btn = page.locator(f'button:has-text("{text}")').first
             btn.click(timeout=1000)
             print(f"  Started lesson via: '{text}'")
-            human_sleep(0.5, 1.5)
+            human_sleep(0.2, 0.5)
             return True
         except Exception:
             continue
@@ -1350,8 +1345,8 @@ def main():
 
         while True:
             try:
-                # Wait for page to fully render before capturing
-                human_sleep(2.0, 4.0)
+                # Wait for page to render before capturing
+                human_sleep(0.8, 1.5)
 
                 print("\n📸 Capturing screen...")
                 img = page.screenshot(type="jpeg", quality=80)
@@ -1387,7 +1382,7 @@ def main():
                     if check_no_hearts(page):
                         print("  💔 Out of hearts! Switching to practice...")
                         click_button(page, ["NO THANKS", "No thanks", "CLOSE", "Close", "✕"])
-                        human_sleep(0.5, 1.0)
+                        human_sleep(0.2, 0.5)
                         start_practice_mode(page)
                         in_practice_mode = True
                         consecutive_no_question = 0
@@ -1418,18 +1413,10 @@ def main():
                         else:
                             print("  ✅ Lesson seems done. Starting next lesson...")
 
-                        # Navigate to learn page if not already there
-                        if not is_on_learn_page:
-                            page.goto("https://www.duolingo.com/learn")
-                            page.wait_for_load_state("domcontentloaded")
-                            page.wait_for_timeout(1500)
-
-                        # Start next lesson
                         lesson_count += 1
                         print(f"  📊 Lessons completed: {lesson_count}")
 
                         if MAX_LESSONS > 0 and lesson_count >= MAX_LESSONS:
-                            # Final XP check
                             xp_after = get_xp(page)
                             print(f"\n🎉 Completed {lesson_count} lessons. Done!")
                             print_xp_summary("After", xp_after)
@@ -1437,6 +1424,12 @@ def main():
                                 gained = xp_after['totalXp'] - xp_before['totalXp']
                                 print(f"  ⚡ XP gained this session: +{gained}")
                             break
+
+                        # Hard reload to get fresh state before next lesson
+                        print("  🔄 Reloading page for fresh state...")
+                        page.goto("https://www.duolingo.com/learn")
+                        page.wait_for_load_state("domcontentloaded")
+                        page.wait_for_timeout(2000)
 
                         # Check hearts before starting next
                         hearts = get_hearts(page)
@@ -1450,13 +1443,12 @@ def main():
                             in_practice_mode = False
                         consecutive_no_question = 0
                         wrong_count = 0
-                        MAX_WRONG_PER_LESSON = random.randint(0, 2)  # Randomize for new lesson
+                        MAX_WRONG_PER_LESSON = random.randint(0, 2)
                         question_count = 0
-                        # Save fresh session
                         context.storage_state(path=SESSION_FILE)
                         print("\n🆕 New lesson started!")
 
-                    human_sleep(0.3, 1.0)
+                    human_sleep(0.2, 0.5)
                     continue
 
                 consecutive_no_question = 0
@@ -1465,18 +1457,16 @@ def main():
                 # Handle tracing exercises — skip (cannot automate mouse drawing)
                 if q_type == "tracing":
                     print("  ✏️ Tracing exercise detected — skipping (cannot automate)")
-                    # Click Skip (not Check — tracing doesn't need checking)
                     click_button(page, ["Skip", "SKIP", "BỎ QUA", "CAN'T USE KEYBOARD"])
-                    human_sleep(0.8, 1.5)
-                    # Duolingo shows the answer after skip, then Continue
+                    human_sleep(0.3, 0.6)
                     click_button(page, ["Continue", "CONTINUE"])
-                    human_sleep(0.5, 1.0)
+                    human_sleep(0.2, 0.5)
                     continue
 
                 # Handle listening exercises separately
                 if q_type == "listening":
                     print("  🎧 Listening exercise detected")
-                    human_sleep(0.3, 0.8)
+                    human_sleep(0.1, 0.3)
                     executed = handle_listening(page, result)
                     if executed:
                         handle_post_answer(page)
@@ -1494,14 +1484,13 @@ def main():
                 # Thinking time based on answer complexity
                 num_actions = len(result.get("actions", []))
                 if num_actions <= 1:
-                    think_time = random.uniform(0.3, 1.0)
+                    think_time = random.uniform(0.1, 0.3)
                 elif num_actions <= 3:
-                    think_time = random.uniform(0.5, 1.5)
+                    think_time = random.uniform(0.2, 0.5)
                 else:
-                    think_time = random.uniform(0.8, 2.0)
+                    think_time = random.uniform(0.3, 0.6)
                 if force_wrong:
-                    think_time = random.uniform(0.2, 0.8)
-                print(f"  Thinking for {think_time:.1f}s...")
+                    think_time = random.uniform(0.1, 0.3)
                 time.sleep(think_time)
 
                 # Execute the actions
@@ -1513,24 +1502,16 @@ def main():
                     if force_wrong:
                         wrong_count += 1
                         print(f"  ❌ Wrong answers so far: {wrong_count}/{MAX_WRONG_PER_LESSON}")
-                        # After wrong answer, Duolingo shows correct answer
-                        # Need to click Continue again
-                        human_sleep(0.3, 0.8)
+                        human_sleep(0.2, 0.4)
                         click_button(page, ["Continue", "CONTINUE"])
-                        human_sleep(0.5, 1.5)
+                        human_sleep(0.3, 0.5)
                 else:
                     print("  No actions executed, skipping...")
                     skip_if_stuck(page)
 
-                # Occasional longer pause (like checking phone, etc)
-                if random.random() < 0.05:
-                    pause = random.uniform(1.5, 3.0)
-                    print(f"  📱 Taking a short break ({pause:.1f}s)...")
-                    time.sleep(pause)
-
             except json.JSONDecodeError as e:
                 print(f"  ⚠ AI returned invalid JSON: {e}")
-                human_sleep(0.3, 1.0)
+                human_sleep(0.2, 0.5)
 
             except KeyboardInterrupt:
                 print(f"\nStopped by user after {question_count} questions, {lesson_count} lessons completed")
@@ -1548,7 +1529,7 @@ def main():
             except Exception as e:
                 print(f"  ⚠ Error: {e}")
                 traceback.print_exc()
-                human_sleep(0.3, 1.0)
+                human_sleep(0.2, 0.5)
 
         try:
             browser.close()

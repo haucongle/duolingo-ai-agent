@@ -21,6 +21,10 @@ except ImportError:
 
 load_dotenv()
 
+if os.getenv("NO_AUDIO", "").lower() in ("true", "1", "yes"):
+    HAS_AUDIO = False
+    print("⚠ Audio disabled via NO_AUDIO env var. Listening exercises will be skipped.")
+
 EMAIL = os.getenv("VI_DUO_EMAIL")
 PASSWORD = os.getenv("VI_DUO_PASSWORD")
 DUO_JWT = os.getenv("DUO_JWT")  # Optional: pre-authenticated JWT token
@@ -2026,18 +2030,10 @@ def main():
                         else:
                             print("  ✅ Lesson seems done. Starting next lesson...")
 
-                        # Navigate to learn page if not already there
-                        if not is_on_learn_page:
-                            page.goto("https://www.duolingo.com/learn")
-                            page.wait_for_load_state("domcontentloaded")
-                            page.wait_for_timeout(1500)
-
-                        # Start next lesson
                         lesson_count += 1
                         print(f"  📊 Lessons completed: {lesson_count}")
 
                         if MAX_LESSONS > 0 and lesson_count >= MAX_LESSONS:
-                            # Final XP check
                             xp_after = get_xp(page)
                             print(f"\n🎉 Completed {lesson_count} lessons. Done!")
                             print_xp_summary("After", xp_after)
@@ -2046,7 +2042,12 @@ def main():
                                 print(f"  ⚡ XP gained this session: +{gained}")
                             break
 
-                        # Check hearts before starting next
+                        # Hard reload to get fresh state before next lesson
+                        print("  🔄 Reloading page for fresh state...")
+                        page.goto("https://www.duolingo.com/learn")
+                        page.wait_for_load_state("domcontentloaded")
+                        page.wait_for_timeout(2000)
+
                         hearts = get_hearts(page)
                         if hearts >= 0:
                             print(f"  ❤️ Hearts: {hearts}/5")
@@ -2058,9 +2059,8 @@ def main():
                             in_practice_mode = False
                         consecutive_no_question = 0
                         wrong_count = 0
-                        MAX_WRONG_PER_LESSON = random.randint(0, 2)  # Randomize for new lesson
+                        MAX_WRONG_PER_LESSON = random.randint(0, 2)
                         question_count = 0
-                        # Save fresh session
                         context.storage_state(path=SESSION_FILE)
                         print("\n🆕 New lesson started!")
 
