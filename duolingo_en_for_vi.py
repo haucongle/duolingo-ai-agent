@@ -1151,7 +1151,7 @@ def get_all_word_tokens(page):
                     continue
 
             if tokens:
-                print(f"    Found {len(tokens)} tokens via '{sel}': {[t['display_text'] for t in tokens]}")
+                # print(f"    Found {len(tokens)} tokens via '{sel}': {[t['display_text'] for t in tokens]}")
                 return tokens
         except Exception:
             continue
@@ -1260,7 +1260,6 @@ def click_challenge_option(page, text):
     """
     TIMEOUT = 2000
 
-    # Precise selectors that only match challenge option containers
     selectors = [
         f'[data-test="challenge-choice"]:has-text("{text}")',
         f'[data-test="challenge-judge-text"]:has-text("{text}")',
@@ -1277,7 +1276,8 @@ def click_challenge_option(page, text):
         except Exception:
             continue
 
-    # Fallback: find the option by matching text within choice containers only
+    # Fallback: find the option by matching text within choice containers
+    # and try clicking, or determine the option number for key press
     try:
         choices = page.locator('[data-test="challenge-choice"]')
         count = choices.count()
@@ -1285,13 +1285,34 @@ def click_challenge_option(page, text):
             choice = choices.nth(i)
             choice_text = choice.inner_text(timeout=500).strip()
             if text.lower() in choice_text.lower():
-                choice.click(timeout=TIMEOUT)
+                try:
+                    choice.click(timeout=TIMEOUT)
+                    return True
+                except Exception:
+                    # If click fails, try pressing the option number (1-indexed)
+                    key = str(i + 1)
+                    print(f"  Click failed, pressing key '{key}' for option '{text}'")
+                    page.keyboard.press(key)
+                    return True
+    except Exception:
+        pass
+
+    # Last resort: try pressing number keys by finding which option contains the text
+    try:
+        choices = page.locator('[data-test="challenge-choice"]')
+        count = choices.count()
+        for i in range(count):
+            choice_text = choices.nth(i).inner_text(timeout=300).strip()
+            if text.lower() in choice_text.lower():
+                key = str(i + 1)
+                print(f"  Pressing key '{key}' for option '{text}'")
+                page.keyboard.press(key)
                 return True
     except Exception:
         pass
 
-    # Last resort: generic click
-    return click_target_generic(page, text)
+    print(f"  ⚠ Could not find option: '{text}'")
+    return False
 
 
 def click_target_generic(page, text):
@@ -1497,12 +1518,26 @@ def handle_post_answer(page, question_text=""):
     click_button(page, ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"])
     human_sleep(0.3, 0.8)
 
+    # Verify a feedback banner actually appeared (correct or incorrect)
+    banner_visible = False
+    try:
+        for sel in ['[data-test*="blame-incorrect"]', '[data-test*="blame-correct"]', '[data-test="blame"]']:
+            el = page.locator(sel).first
+            if el.is_visible(timeout=800):
+                banner_visible = True
+                break
+    except Exception:
+        pass
+
+    if not banner_visible:
+        print(f"  ⚠ No feedback banner detected (Check button may not have been clicked)")
+        return
+
     # Capture correct answer from feedback (if wrong) and log result
     correct_answer = capture_correct_answer(page, question_text)
     if correct_answer:
         print(f"  ❌ Incorrect! Correct answer: {correct_answer}")
     else:
-        # Fallback: check if incorrect banner is visible but answer couldn't be extracted
         is_incorrect = False
         try:
             el = page.locator('[data-test*="blame-incorrect"]').first

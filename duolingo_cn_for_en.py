@@ -532,7 +532,7 @@ def execute_actions(page, result, force_wrong=False):
 
         elif action == "click":
             print(f"  [{i+1}] Clicking: '{target}'")
-            click_target(page, target)
+            click_target(page, target, q_type=q_type)
             time.sleep(0.15)
 
         elif action == "type":
@@ -707,13 +707,73 @@ def click_word_token(page, text):
     return click_target_generic(page, text)
 
 
-def click_target(page, text):
+def click_target(page, text, q_type=""):
     """Click an element matching the given text. Smart matching for Chinese (hanzi+pinyin)."""
+
+    # For multiple_choice/checkbox, target only challenge option area
+    if q_type in ("multiple_choice", "image_choice"):
+        return click_challenge_option(page, text)
 
     # First try the smart word token matching (handles pinyin+hanzi)
     if click_word_token(page, text):
         return True
 
+    return click_target_generic(page, text)
+
+
+def click_challenge_option(page, text):
+    """Click a challenge option precisely, with key press fallback."""
+    TIMEOUT = 2000
+
+    selectors = [
+        f'[data-test="challenge-choice"]:has-text("{text}")',
+        f'[data-test="challenge-judge-text"]:has-text("{text}")',
+        f'div[role="radio"]:has-text("{text}")',
+        f'label:has-text("{text}")',
+    ]
+
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            loc.click(timeout=TIMEOUT)
+            return True
+        except Exception:
+            continue
+
+    # Fallback: find option by text match and try clicking or pressing number key
+    try:
+        choices = page.locator('[data-test="challenge-choice"]')
+        count = choices.count()
+        for i in range(count):
+            choice = choices.nth(i)
+            choice_text = choice.inner_text(timeout=500).strip()
+            if text.lower() in choice_text.lower():
+                try:
+                    choice.click(timeout=TIMEOUT)
+                    return True
+                except Exception:
+                    key = str(i + 1)
+                    print(f"  Click failed, pressing key '{key}' for option '{text}'")
+                    page.keyboard.press(key)
+                    return True
+    except Exception:
+        pass
+
+    # Last resort: try pressing number keys
+    try:
+        choices = page.locator('[data-test="challenge-choice"]')
+        count = choices.count()
+        for i in range(count):
+            choice_text = choices.nth(i).inner_text(timeout=300).strip()
+            if text.lower() in choice_text.lower():
+                key = str(i + 1)
+                print(f"  Pressing key '{key}' for option '{text}'")
+                page.keyboard.press(key)
+                return True
+    except Exception:
+        pass
+
+    print(f"  ⚠ Could not find option: '{text}'")
     return False
 
 
@@ -811,10 +871,25 @@ def check_answer_feedback(page):
     Logs the result and returns (is_correct, correct_answer_or_None).
     """
     try:
+        # First verify a feedback banner actually appeared
+        banner_visible = False
+        for sel in ['[data-test*="blame-incorrect"]', '[data-test*="blame-correct"]', '[data-test="blame"]']:
+            try:
+                el = page.locator(sel).first
+                if el.is_visible(timeout=1000):
+                    banner_visible = True
+                    break
+            except Exception:
+                continue
+
+        if not banner_visible:
+            print(f"  ⚠ No feedback banner detected (Check button may not have been clicked)")
+            return True, None
+
         # Check for incorrect banner
         try:
             el = page.locator('[data-test*="blame-incorrect"]').first
-            if el.is_visible(timeout=1000):
+            if el.is_visible(timeout=500):
                 feedback = el.inner_text(timeout=500).strip()
                 correct_answer = None
                 for keyword in ['Correct solution:', 'Correct answer:']:
