@@ -91,6 +91,8 @@ Exercise types and how to answer:
 - word_bank: Click words in the correct order from the word bank.
   actions = [{"action": "click", "target": "word1"}, {"action": "click", "target": "word2"}, ...]
   all_options = list of all available words in the bank, total_options = number of words
+  IMPORTANT: "question" must contain the FULL visible sentence/text being translated or completed (not just "translate this").
+  For example: question = "I told you not to ___ that name again, so don't ___ it!" or "Translate: She likes coffee"
 
 - typing: Type the answer in the text field.
   actions = [{"action": "type", "target": "input", "value": "the answer"}]
@@ -976,6 +978,75 @@ def make_wrong_actions(result):
     return None  # Can't make wrong answer, just answer correctly
 
 
+def refine_word_bank_actions(page, result):
+    """For word_bank exercises, read actual DOM tokens and ask GPT to arrange them.
+    Always runs to ensure both correct words AND correct order.
+    """
+    tokens = get_all_word_tokens(page)
+    if not tokens:
+        return
+
+    available_words = [t["display_text"] for t in tokens]
+    question = result.get("question", "")
+    ai_answer = result.get("answer", "")
+
+    # Check if there's a cached correct answer for this question
+    cached = answer_cache.get(question, "")
+
+    print(f"  📋 Word bank tokens: {available_words}")
+
+    print(f"  🔄 Arranging words using actual word bank...")
+    try:
+        prompt_parts = [
+            'A Duolingo word bank exercise. You must click words from the word bank IN THE CORRECT ORDER '
+            'to form a sentence or fill in blanks.',
+            f'\nQuestion/sentence shown on screen: {question}',
+        ]
+        if cached:
+            prompt_parts.append(f'Known correct answer: {cached}')
+        if ai_answer and ai_answer != cached:
+            prompt_parts.append(f'AI suggested answer: {ai_answer}')
+        prompt_parts.append(
+            f'\nAvailable words in the word bank (you can ONLY use these exact words): {available_words}'
+        )
+        prompt_parts.append(
+            '\nArrange the words in the correct order. Not all words need to be used. '
+            'Use each word at most once.\n'
+            'IMPORTANT: The order matters — each word fills the next blank in the sentence.\n'
+            'If a known correct answer is provided, use it to determine the exact word order.\n'
+            'Reply with ONLY the words separated by " | " (pipe), nothing else.\n'
+            'Example: word1 | word2 | word3'
+        )
+
+        r = client.responses.create(
+            model="gpt-4o-mini",
+            input=[{"role": "user", "content": "\n".join(prompt_parts)}],
+        )
+        ordered = [w.strip() for w in r.output_text.strip().split("|") if w.strip()]
+
+        # Validate all words exist in the bank
+        valid_ordered = []
+        remaining = list(available_words)
+        for word in ordered:
+            if word in remaining:
+                valid_ordered.append(word)
+                remaining.remove(word)
+                continue
+            for rw in remaining:
+                if rw.lower() == word.lower():
+                    valid_ordered.append(rw)
+                    remaining.remove(rw)
+                    break
+
+        if valid_ordered:
+            result["actions"] = [{"action": "click", "target": w} for w in valid_ordered]
+            print(f"  ✅ Word order: {valid_ordered}")
+        else:
+            print(f"  ⚠ Refinement failed, keeping original actions")
+    except Exception as e:
+        print(f"  ⚠ Word bank refinement failed: {e}")
+
+
 def execute_actions(page, result, force_wrong=False):
     """Execute the AI-determined actions on the page."""
 
@@ -1014,7 +1085,7 @@ def execute_actions(page, result, force_wrong=False):
 
         elif action == "click":
             print(f"  [{i+1}] Clicking: '{target}'")
-            click_target(page, target)
+            click_target(page, target, q_type=q_type)
             # Extra wait after click for DOM to update (word moves to answer area)
             time.sleep(0.3)
 
@@ -1168,14 +1239,58 @@ def click_word_token(page, text):
     return click_target_generic(page, text)
 
 
-def click_target(page, text):
+def click_target(page, text, q_type=""):
     """Click an element matching the given text."""
 
-    # First try the smart word token matching
+    # For checkbox/multiple_choice, target only the challenge option area
+    if q_type in ("checkbox", "multiple_choice", "image_choice"):
+        return click_challenge_option(page, text)
+
+    # For word_bank/listening, use word token matching first
     if click_word_token(page, text):
         return True
 
-    # Fallback to generic click (for checkbox, multiple_choice, etc.)
+    # Fallback to generic click
+    return click_target_generic(page, text)
+
+
+def click_challenge_option(page, text):
+    """Click a challenge option (checkbox/radio/choice) precisely.
+    Only targets elements within the challenge options area, avoiding conversation bubbles.
+    """
+    TIMEOUT = 2000
+
+    # Precise selectors that only match challenge option containers
+    selectors = [
+        f'[data-test="challenge-choice"]:has-text("{text}")',
+        f'[data-test="challenge-judge-text"]:has-text("{text}")',
+        f'div[role="checkbox"]:has-text("{text}")',
+        f'div[role="radio"]:has-text("{text}")',
+        f'label:has-text("{text}")',
+    ]
+
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            loc.click(timeout=TIMEOUT)
+            return True
+        except Exception:
+            continue
+
+    # Fallback: find the option by matching text within choice containers only
+    try:
+        choices = page.locator('[data-test="challenge-choice"]')
+        count = choices.count()
+        for i in range(count):
+            choice = choices.nth(i)
+            choice_text = choice.inner_text(timeout=500).strip()
+            if text.lower() in choice_text.lower():
+                choice.click(timeout=TIMEOUT)
+                return True
+    except Exception:
+        pass
+
+    # Last resort: generic click
     return click_target_generic(page, text)
 
 
@@ -1192,7 +1307,6 @@ def click_target_generic(page, text):
         f'div[role="radio"]:has-text("{text}")',
         f'button:has-text("{text}")',
         f'div[role="button"]:has-text("{text}")',
-        f'span:has-text("{text}")',
     ]
 
     for sel in selectors:
@@ -1203,7 +1317,7 @@ def click_target_generic(page, text):
         except Exception:
             continue
 
-    # Fallback: get_by_text
+    # Fallback: get_by_text (exact match first to avoid hitting conversation text)
     for exact in [True, False]:
         try:
             loc = page.get_by_text(text, exact=exact).first
@@ -1415,14 +1529,27 @@ def handle_post_answer(page, question_text=""):
 
 
 def skip_if_stuck(page):
-    """Click Skip if available (for listening exercises etc)."""
-    try:
-        click_button(page, ["TẠM THỜI KHÔNG NÓI ĐƯỢC", "Tạm thời không nói được",
-                            "CAN'T SPEAK NOW", "Skip", "SKIP", "BỎ QUA",
-                            "CAN'T LISTEN NOW"])
+    """Click Skip/Can't listen/Can't speak if available."""
+    skip_texts = [
+        "HIỆN KHÔNG NGHE ĐƯỢC", "Hiện không nghe được",
+        "TẠM THỜI KHÔNG NÓI ĐƯỢC", "Tạm thời không nói được",
+        "CAN'T LISTEN NOW", "CAN'T SPEAK NOW",
+        "Skip", "SKIP", "BỎ QUA",
+    ]
+    # Try click_button first (matches <button> elements)
+    if click_button(page, skip_texts):
         return True
-    except Exception:
-        return False
+    # Fallback: try any clickable element with matching text
+    for text in skip_texts:
+        try:
+            loc = page.get_by_text(text, exact=False).first
+            if loc.is_visible(timeout=500):
+                loc.click(timeout=1000)
+                print(f"  Clicked skip: '{text}'")
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def click_start_xp_button(page):
@@ -2115,14 +2242,21 @@ def main():
                     executed = handle_audio_matching(page, result)
                     if executed:
                         handle_post_answer(page, q_text)
+                    else:
+                        human_sleep(0.3, 0.5)
+                        skip_if_stuck(page)
+                        human_sleep(0.3, 0.5)
+                        click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
+                        human_sleep(0.3, 0.5)
                     continue
 
                 # Handle speaking exercises (Đọc câu này) — skip, no mic
                 if q_type == "speaking":
                     print("  🎤 Speaking exercise detected (Đọc câu này) — skipping (no mic)")
                     skip_if_stuck(page)
-                    human_sleep(0.5, 1.0)
-                    handle_post_answer(page, q_text)
+                    human_sleep(0.3, 0.5)
+                    click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
+                    human_sleep(0.3, 0.5)
                     continue
 
                 # Handle audio fill-in-the-blank (Nghe và tìm từ còn thiếu)
@@ -2132,6 +2266,12 @@ def main():
                     executed = handle_audio_fill_blank(page, result)
                     if executed:
                         handle_post_answer(page, q_text)
+                    else:
+                        human_sleep(0.3, 0.5)
+                        skip_if_stuck(page)
+                        human_sleep(0.3, 0.5)
+                        click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
+                        human_sleep(0.3, 0.5)
                     continue
 
                 # Handle listen-and-type (Nhập từ còn thiếu)
@@ -2141,6 +2281,12 @@ def main():
                     executed = handle_listen_and_type(page, result)
                     if executed:
                         handle_post_answer(page, q_text)
+                    else:
+                        human_sleep(0.3, 0.5)
+                        skip_if_stuck(page)
+                        human_sleep(0.3, 0.5)
+                        click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
+                        human_sleep(0.3, 0.5)
                     continue
 
                 # Handle listening exercises separately
@@ -2150,6 +2296,13 @@ def main():
                     executed = handle_listening(page, result)
                     if executed:
                         handle_post_answer(page, q_text)
+                    else:
+                        # Skip failed or no audio — click skip + continue to move on
+                        human_sleep(0.3, 0.5)
+                        skip_if_stuck(page)
+                        human_sleep(0.3, 0.5)
+                        click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
+                        human_sleep(0.3, 0.5)
                     continue
 
                 # Decide if we should answer wrong (for human simulation)
@@ -2160,6 +2313,10 @@ def main():
                     and q_type not in ("matching", "tap_pairs", "checkbox")
                     and should_answer_wrong()
                 )
+
+                # For word_bank: read actual DOM tokens and refine actions
+                if q_type == "word_bank" and not force_wrong:
+                    refine_word_bank_actions(page, result)
 
                 # Thinking time based on answer complexity
                 num_actions = len(result.get("actions", []))

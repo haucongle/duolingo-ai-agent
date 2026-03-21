@@ -77,6 +77,8 @@ Exercise types and how to answer:
 - word_bank: Click words in the correct order from the word bank.
   actions = [{"action": "click", "target": "word1"}, {"action": "click", "target": "word2"}, ...]
   all_options = list of all available words in the bank, total_options = number of words
+  IMPORTANT: "question" must contain the FULL visible sentence/text being translated or completed (not just "translate this").
+  For example: question = "Translate: She likes coffee" or "The ___ is on the table."
 
 - typing: Type the answer in the text field.
   actions = [{"action": "type", "target": "input", "value": "the answer"}]
@@ -430,6 +432,68 @@ def make_wrong_actions(result):
             return [{"action": "type", "target": "input", "value": typo}]
 
     return None  # Can't make wrong answer, just answer correctly
+
+
+def refine_word_bank_actions(page, result):
+    """For word_bank exercises, read actual DOM tokens and ask GPT to arrange them.
+    Always runs to ensure both correct words AND correct order.
+    """
+    tokens = get_all_word_tokens(page)
+    if not tokens:
+        return
+
+    available_words = [t["display_text"] for t in tokens]
+    question = result.get("question", "")
+    ai_answer = result.get("answer", "")
+
+    print(f"  📋 Word bank tokens: {available_words}")
+
+    print(f"  🔄 Arranging words using actual word bank...")
+    try:
+        prompt_parts = [
+            'A Duolingo word bank exercise. You must click words from the word bank IN THE CORRECT ORDER '
+            'to form a sentence or fill in blanks.',
+            f'\nQuestion/sentence shown on screen: {question}',
+        ]
+        if ai_answer:
+            prompt_parts.append(f'AI suggested answer: {ai_answer}')
+        prompt_parts.append(
+            f'\nAvailable words in the word bank (you can ONLY use these exact words): {available_words}'
+        )
+        prompt_parts.append(
+            '\nArrange the words in the correct order. Not all words need to be used. '
+            'Use each word at most once.\n'
+            'IMPORTANT: The order matters — each word fills the next blank in the sentence.\n'
+            'Reply with ONLY the words separated by " | " (pipe), nothing else.\n'
+            'Example: word1 | word2 | word3'
+        )
+
+        r = client.responses.create(
+            model="gpt-4o-mini",
+            input=[{"role": "user", "content": "\n".join(prompt_parts)}],
+        )
+        ordered = [w.strip() for w in r.output_text.strip().split("|") if w.strip()]
+
+        valid_ordered = []
+        remaining = list(available_words)
+        for word in ordered:
+            if word in remaining:
+                valid_ordered.append(word)
+                remaining.remove(word)
+                continue
+            for rw in remaining:
+                if rw.lower() == word.lower():
+                    valid_ordered.append(rw)
+                    remaining.remove(rw)
+                    break
+
+        if valid_ordered:
+            result["actions"] = [{"action": "click", "target": w} for w in valid_ordered]
+            print(f"  ✅ Word order: {valid_ordered}")
+        else:
+            print(f"  ⚠ Refinement failed, keeping original actions")
+    except Exception as e:
+        print(f"  ⚠ Word bank refinement failed: {e}")
 
 
 def execute_actions(page, result, force_wrong=False):
@@ -1480,6 +1544,10 @@ def main():
                     and q_type not in ("matching", "tap_pairs")
                     and should_answer_wrong()
                 )
+
+                # For word_bank: read actual DOM tokens and refine actions
+                if q_type == "word_bank" and not force_wrong:
+                    refine_word_bank_actions(page, result)
 
                 # Thinking time based on answer complexity
                 num_actions = len(result.get("actions", []))
