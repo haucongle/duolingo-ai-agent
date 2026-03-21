@@ -290,11 +290,57 @@ def handle_listening(page, result):
         skip_if_stuck(page)
         return False
 
-    # Step 4: Match transcript to word bank options and click them in order
-    print(f"  Matching '{transcript}' to word bank: {all_options}")
+    # Step 4: Read actual word bank tokens from DOM
+    tokens = get_all_word_tokens(page)
+    if tokens:
+        available_words = [t["display_text"] for t in tokens]
+    else:
+        available_words = all_options
 
-    # Build click order: find which options appear in the transcript, in order
-    words_to_click = match_words_to_transcript(transcript, all_options)
+    print(f"  Transcript: '{transcript}'")
+    print(f"  Word bank: {available_words}")
+
+    words_to_click = None
+    try:
+        r = client.responses.create(
+            model="gpt-4o-mini",
+            input=[{
+                "role": "user",
+                "content": (
+                    f'A Duolingo listening exercise (Chinese for English speakers). '
+                    f'The spoken sentence is:\n"{transcript}"\n\n'
+                    f'Available words in the word bank (ONLY use these exact words): {available_words}\n\n'
+                    f'Select and arrange words from the bank to form the sentence you heard.\n'
+                    f'Chinese characters may have pinyin variants in the bank.\n'
+                    f'Numbers in speech may appear as words (e.g. "12" → "twelve").\n'
+                    f'Not all words need to be used. Use each word at most once.\n'
+                    f'Reply with ONLY the words separated by " | " (pipe), nothing else.'
+                ),
+            }],
+        )
+        ordered = [w.strip() for w in r.output_text.strip().split("|") if w.strip()]
+
+        valid = []
+        remaining = list(available_words)
+        for word in ordered:
+            if word in remaining:
+                valid.append(word)
+                remaining.remove(word)
+                continue
+            for rw in remaining:
+                if rw.lower() == word.lower():
+                    valid.append(rw)
+                    remaining.remove(rw)
+                    break
+        if valid:
+            words_to_click = valid
+            print(f"  GPT word order: {words_to_click}")
+    except Exception as e:
+        print(f"  ⚠ GPT ordering failed: {e}")
+
+    # Fallback to simple matching if GPT failed
+    if not words_to_click:
+        words_to_click = match_words_to_transcript(transcript, available_words)
 
     if not words_to_click:
         print("  ⚠ Could not match words, skipping...")
