@@ -34,7 +34,7 @@ SESSION_FILE = "en_duo_session.json"
 # Chance of deliberately answering wrong (0.0 - 1.0)
 WRONG_ANSWER_CHANCE = 0.10
 # Max deliberate wrong answers per lesson (random 0-2)
-MAX_WRONG_PER_LESSON = random.randint(0, 2)
+MAX_WRONG_PER_LESSON = random.randint(0, 1)
 # Max lessons to complete (0 = unlimited). Set via env MAX_LESSONS.
 MAX_LESSONS = int(os.getenv("MAX_LESSONS", "0"))
 
@@ -1628,7 +1628,7 @@ def main():
                             in_practice_mode = False
                         consecutive_no_question = 0
                         wrong_count = 0
-                        MAX_WRONG_PER_LESSON = random.randint(0, 2)
+                        MAX_WRONG_PER_LESSON = random.randint(0, 1)
                         question_count = 0
                         context.storage_state(path=SESSION_FILE)
                         print("\n🆕 New lesson started!")
