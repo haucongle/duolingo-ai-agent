@@ -1353,8 +1353,12 @@ def click_challenge_option(page, text):
     except Exception:
         pass
 
-    print(f"  ⚠ Could not find option: '{text}'")
-    return False
+    # Fallback: try word token matching (some "multiple_choice" exercises use word bank buttons)
+    if click_word_token(page, text):
+        return True
+
+    # Last resort: generic click
+    return click_target_generic(page, text)
 
 
 def click_target_generic(page, text):
