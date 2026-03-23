@@ -31,10 +31,9 @@ DUO_JWT = os.getenv("DUO_JWT")  # Optional: pre-authenticated JWT token
 
 SESSION_FILE = "en_duo_session.json"
 
-# Chance of deliberately answering wrong (0.0 - 1.0)
-WRONG_ANSWER_CHANCE = 0.10
-# Max deliberate wrong answers per lesson (random 0-2)
-MAX_WRONG_PER_LESSON = random.randint(0, 1)
+# Chance of deliberately answering wrong (0.0 = disabled)
+WRONG_ANSWER_CHANCE = 0.0
+MAX_WRONG_PER_LESSON = 0
 # Max lessons to complete (0 = unlimited). Set via env MAX_LESSONS.
 MAX_LESSONS = int(os.getenv("MAX_LESSONS", "0"))
 
@@ -293,7 +292,7 @@ def handle_listening(page, result):
     # Step 4: Read actual word bank tokens from DOM
     tokens = get_all_word_tokens(page)
     if tokens:
-        available_words = [t["display_text"] for t in tokens]
+        available_words = [t.get("display_text") or t.get("hanzi") or t.get("full_text", "") for t in tokens]
     else:
         available_words = all_options
 
@@ -349,7 +348,7 @@ def handle_listening(page, result):
 
     print(f"  Click order: {words_to_click}")
     for word in words_to_click:
-        human_sleep(0.1, 0.3)
+        human_sleep(0.3, 0.8)
         click_target(page, word)
 
     # Clean up temp file
@@ -488,7 +487,7 @@ def refine_word_bank_actions(page, result):
     if not tokens:
         return
 
-    available_words = [t["display_text"] for t in tokens]
+    available_words = [t.get("display_text") or t.get("hanzi") or t.get("full_text", "") for t in tokens]
     question = result.get("question", "")
     ai_answer = result.get("answer", "")
 
@@ -568,9 +567,9 @@ def execute_actions(page, result, force_wrong=False):
 
         if i > 0:
             if is_matching and i % 2 == 0:
-                human_sleep(0.15, 0.35)
+                human_sleep(0.3, 0.8)
             else:
-                human_sleep(0.15, 0.4)
+                human_sleep(0.5, 1.2)
 
         if action == "press":
             print(f"  [{i+1}] Pressing key: '{key}'")
@@ -579,7 +578,7 @@ def execute_actions(page, result, force_wrong=False):
         elif action == "click":
             print(f"  [{i+1}] Clicking: '{target}'")
             click_target(page, target, q_type=q_type)
-            time.sleep(0.15)
+            time.sleep(0.3)
 
         elif action == "type":
             print(f"  [{i+1}] Typing: '{value}'")
@@ -666,7 +665,7 @@ def get_all_word_tokens(page):
                     continue
 
             if tokens:
-                print(f"    Found {len(tokens)} tokens via '{sel}': {[t['hanzi'] for t in tokens]}")
+                # print(f"    Found {len(tokens)} tokens via '{sel}': {[t['hanzi'] for t in tokens]}")
                 return tokens
         except Exception:
             continue
@@ -697,7 +696,7 @@ def get_all_word_tokens(page):
                 except Exception:
                     continue
             if tokens:
-                print(f"    Found {len(tokens)} tokens via button scan: {[t['hanzi'] for t in tokens]}")
+                pass
         except Exception:
             pass
 
@@ -889,14 +888,14 @@ def type_answer(page, text):
                 # Pre-filled text doesn't match answer, clear and retype
                 loc.fill("")
             for char in to_type:
-                loc.type(char, delay=random.randint(15, 50))
+                loc.type(char, delay=random.randint(30, 120))
             return True
         except Exception:
             continue
 
     # Fallback: press keys directly
     try:
-        page.keyboard.type(text, delay=random.randint(15, 50))
+        page.keyboard.type(text, delay=random.randint(40, 100))
         return True
     except Exception:
         print(f"  ⚠ Could not type answer")
@@ -983,17 +982,15 @@ def check_answer_feedback(page):
 def handle_post_answer(page):
     """Click Check, Continue, or Next after answering."""
 
-    human_sleep(0.2, 0.5)
+    human_sleep(0.5, 1.5)
 
-    # Click CHECK / KIỂM TRA button
     click_button(page, ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"])
-    human_sleep(0.2, 0.5)
+    human_sleep(0.3, 0.8)
 
     check_answer_feedback(page)
 
-    # Click CONTINUE button (appears after check)
     click_button(page, ["Continue", "CONTINUE"])
-    human_sleep(0.3, 0.6)
+    human_sleep(0.5, 1.5)
 
 
 def skip_if_stuck(page):
@@ -1029,7 +1026,7 @@ def click_start_xp_button(page):
             el = attempt()
             el.click(timeout=3000)
             print(f"  Clicked 'START +XP' button")
-            human_sleep(0.2, 0.5)
+            human_sleep(0.5, 1.5)
             return True
         except Exception:
             continue
@@ -1037,7 +1034,7 @@ def click_start_xp_button(page):
     print("  ⚠ Could not find 'START +XP' button, trying keyboard Enter...")
     try:
         page.keyboard.press("Enter")
-        human_sleep(0.2, 0.5)
+        human_sleep(0.5, 1.5)
         return True
     except Exception:
         return False
@@ -1082,67 +1079,26 @@ def check_no_hearts(page):
 
 
 def start_practice_mode(page):
-    """Navigate to practice mode (doesn't cost hearts)."""
-    print("  🏋️ Starting practice mode (free, no hearts needed)...")
-    page.goto("https://www.duolingo.com/practice")
+    """Navigate to target practice mode and click Continue to start."""
+    print("  🏋️ Starting target practice mode...")
+    page.goto("https://www.duolingo.com/practice-hub/target-practice")
     page.wait_for_load_state("domcontentloaded")
     page.wait_for_timeout(1500)
+    click_button(page, ["Continue", "CONTINUE", "Start", "START", "PRACTICE", "Practice"])
+    human_sleep(0.5, 1.0)
     return True
 
 
 def start_lesson(page):
-    """Auto-detect and start the next available lesson."""
-
+    """Start a target practice lesson."""
     print("Looking for a lesson to start...")
-    human_sleep(0.2, 0.4)
+    start_practice_mode(page)
+    human_sleep(0.5, 1.0)
 
-    if check_no_hearts(page):
-        print("  💔 Out of hearts! Switching to practice mode...")
-        click_button(page, ["NO THANKS", "No thanks", "CLOSE", "Close", "✕"])
-        human_sleep(0.2, 0.4)
-        start_practice_mode(page)
-        return True
-
-    start_texts = ["START", "Start"]
-    clicked_start = False
-
-    for text in start_texts:
-        try:
-            loc = page.get_by_text(text, exact=True).first
-            loc.click(timeout=2000)
-            print(f"  Clicked '{text}' on learn page")
-            clicked_start = True
-            human_sleep(0.2, 0.4)
-            break
-        except Exception:
-            continue
-
-    if not clicked_start:
-        fallback_selectors = [
-            '[data-test="skill-path"] [aria-current="true"]',
-            '[data-test="start-button"]',
-        ]
-        for sel in fallback_selectors:
-            try:
-                loc = page.locator(sel).first
-                loc.click(timeout=1500)
-                print(f"  Clicked: {sel}")
-                clicked_start = True
-                human_sleep(0.2, 0.4)
-                break
-            except Exception:
-                continue
-
-    if not clicked_start:
-        print("  Could not find START button, trying practice mode...")
-        start_practice_mode(page)
-        return True
-
-    # Step 2: Click "START +XX XP" button in the popup
+    # Click START / START +XP button if visible
     if click_start_xp_button(page):
         return True
 
-    # Step 3: Fallback - try other popup buttons
     popup_texts = ["START", "Start", "START LESSON", "CONTINUE", "Continue",
                    "PRACTICE"]
     for text in popup_texts:
@@ -1150,12 +1106,11 @@ def start_lesson(page):
             btn = page.locator(f'button:has-text("{text}")').first
             btn.click(timeout=1000)
             print(f"  Started lesson via: '{text}'")
-            human_sleep(0.2, 0.5)
+            human_sleep(0.5, 1.5)
             return True
         except Exception:
             continue
 
-    # Might already be in the lesson
     return True
 
 
@@ -1508,21 +1463,9 @@ def main():
                 raise Exception(f"Login failed after retry. Current URL: {page.url}")
             context.storage_state(path=SESSION_FILE)
 
-        # Check XP before starting
-        print("\n📊 Checking XP before practice...")
-        xp_before = get_xp(page)
-        print_xp_summary("Before", xp_before)
-
-        # Check hearts and decide: lesson or practice
-        hearts = get_hearts(page)
-        if hearts >= 0:
-            print(f"  ❤️ Hearts: {hearts}/5")
-        in_practice_mode = False
-        if 0 <= hearts < 5:
-            start_practice_mode(page)
-            in_practice_mode = True
-        else:
-            start_lesson(page)
+        xp_before = None
+        in_practice_mode = True
+        start_practice_mode(page)
 
         global MAX_WRONG_PER_LESSON
         xp_after = None
@@ -1533,8 +1476,7 @@ def main():
 
         while True:
             try:
-                # Wait for page to render before capturing
-                human_sleep(0.8, 1.5)
+                human_sleep(2.0, 4.0)
 
                 print("\n📸 Capturing screen...")
                 img = page.screenshot(type="jpeg", quality=80)
@@ -1570,7 +1512,7 @@ def main():
                     if check_no_hearts(page):
                         print("  💔 Out of hearts! Switching to practice...")
                         click_button(page, ["NO THANKS", "No thanks", "CLOSE", "Close", "✕"])
-                        human_sleep(0.2, 0.5)
+                        human_sleep(0.5, 1.0)
                         start_practice_mode(page)
                         in_practice_mode = True
                         consecutive_no_question = 0
@@ -1578,7 +1520,7 @@ def main():
 
                     # Check if lesson is complete (URL changed back to /learn)
                     current_url = page.url
-                    is_on_learn_page = "/learn" in current_url and "/lesson" not in current_url
+                    is_on_learn_page = ("/learn" in current_url or "/practice-hub" in current_url) and "/lesson" not in current_url
 
                     # Try clicking continue/next in case we're on a result screen
                     click_button(
@@ -1605,38 +1547,20 @@ def main():
                         print(f"  📊 Lessons completed: {lesson_count}")
 
                         if MAX_LESSONS > 0 and lesson_count >= MAX_LESSONS:
-                            xp_after = get_xp(page)
                             print(f"\n🎉 Completed {lesson_count} lessons. Done!")
-                            print_xp_summary("After", xp_after)
-                            if xp_before and xp_after:
-                                gained = xp_after['totalXp'] - xp_before['totalXp']
-                                print(f"  ⚡ XP gained this session: +{gained}")
                             break
 
-                        # Hard reload to get fresh state before next lesson
-                        print("  🔄 Reloading page for fresh state...")
-                        page.goto("https://www.duolingo.com/learn")
-                        page.wait_for_load_state("domcontentloaded")
-                        page.wait_for_timeout(2000)
-
-                        # Check hearts before starting next
-                        hearts = get_hearts(page)
-                        if hearts >= 0:
-                            print(f"  ❤️ Hearts: {hearts}/5")
-                        if 0 <= hearts < 5:
-                            start_practice_mode(page)
-                            in_practice_mode = True
-                        else:
-                            start_lesson(page)
-                            in_practice_mode = False
+                        # Go straight to next practice
+                        start_practice_mode(page)
+                        in_practice_mode = True
                         consecutive_no_question = 0
                         wrong_count = 0
-                        MAX_WRONG_PER_LESSON = random.randint(0, 1)
+                        MAX_WRONG_PER_LESSON = 0
                         question_count = 0
                         context.storage_state(path=SESSION_FILE)
-                        print("\n🆕 New lesson started!")
+                        print("\n🆕 New practice started!")
 
-                    human_sleep(0.2, 0.5)
+                    human_sleep(0.5, 1.0)
                     continue
 
                 consecutive_no_question = 0
@@ -1646,15 +1570,15 @@ def main():
                 if q_type == "tracing":
                     print("  ✏️ Tracing exercise detected — skipping (cannot automate)")
                     click_button(page, ["Skip", "SKIP", "BỎ QUA", "CAN'T USE KEYBOARD"])
-                    human_sleep(0.3, 0.6)
+                    human_sleep(0.5, 1.0)
                     click_button(page, ["Continue", "CONTINUE"])
-                    human_sleep(0.2, 0.5)
+                    human_sleep(0.5, 1.0)
                     continue
 
                 # Handle listening exercises separately
                 if q_type == "listening":
                     print("  🎧 Listening exercise detected")
-                    human_sleep(0.1, 0.3)
+                    human_sleep(0.3, 0.8)
                     executed = handle_listening(page, result)
                     if executed:
                         handle_post_answer(page)
@@ -1676,13 +1600,14 @@ def main():
                 # Thinking time based on answer complexity
                 num_actions = len(result.get("actions", []))
                 if num_actions <= 1:
-                    think_time = random.uniform(0.1, 0.3)
+                    think_time = random.uniform(0.3, 1.0)
                 elif num_actions <= 3:
-                    think_time = random.uniform(0.2, 0.5)
+                    think_time = random.uniform(0.5, 1.5)
                 else:
-                    think_time = random.uniform(0.3, 0.6)
+                    think_time = random.uniform(0.8, 2.0)
                 if force_wrong:
-                    think_time = random.uniform(0.1, 0.3)
+                    think_time = random.uniform(0.2, 0.8)
+                print(f"  Thinking for {think_time:.1f}s...")
                 time.sleep(think_time)
 
                 # Execute the actions
@@ -1694,34 +1619,25 @@ def main():
                     if force_wrong:
                         wrong_count += 1
                         print(f"  ❌ Wrong answers so far: {wrong_count}/{MAX_WRONG_PER_LESSON}")
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.3, 0.8)
                         click_button(page, ["Continue", "CONTINUE"])
-                        human_sleep(0.3, 0.5)
+                        human_sleep(0.5, 1.5)
                 else:
                     print("  No actions executed, skipping...")
                     skip_if_stuck(page)
 
             except json.JSONDecodeError as e:
                 print(f"  ⚠ AI returned invalid JSON: {e}")
-                human_sleep(0.2, 0.5)
+                human_sleep(0.5, 1.0)
 
             except KeyboardInterrupt:
                 print(f"\nStopped by user after {question_count} questions, {lesson_count} lessons completed")
-                # Try to get final XP (browser still alive at this point)
-                try:
-                    if not xp_after:
-                        xp_after = get_xp(page)
-                    if xp_before and xp_after:
-                        gained = xp_after['totalXp'] - xp_before['totalXp']
-                        print(f"  ⚡ XP gained this session: +{gained}")
-                except Exception:
-                    pass
                 break
 
             except Exception as e:
                 print(f"  ⚠ Error: {e}")
                 traceback.print_exc()
-                human_sleep(0.2, 0.5)
+                human_sleep(0.5, 1.0)
 
         try:
             browser.close()
