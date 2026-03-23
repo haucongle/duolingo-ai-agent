@@ -1298,28 +1298,55 @@ def click_target(page, text, q_type=""):
 
 def click_challenge_option(page, text):
     """Click a challenge option (checkbox/radio/choice) precisely.
-    Only targets elements within the challenge options area, avoiding conversation bubbles.
+    Uses Playwright's filter() API for robust text matching (handles apostrophes, special chars).
     """
     TIMEOUT = 2000
+    escaped = text.replace("'", "\\'")
 
-    selectors = [
-        f'[data-test="challenge-choice"]:has-text("{text}")',
-        f'[data-test="challenge-judge-text"]:has-text("{text}")',
-        f'div[role="checkbox"]:has-text("{text}")',
-        f'div[role="radio"]:has-text("{text}")',
-        f'label:has-text("{text}")',
+    # Strategy 1: Playwright filter API (most robust for text with special chars)
+    filter_selectors = [
+        '[data-test="challenge-choice"]',
+        'div[role="checkbox"]',
+        'div[role="radio"]',
+        'label',
+        'div[role="listitem"]',
     ]
-
-    for sel in selectors:
+    for sel in filter_selectors:
         try:
-            loc = page.locator(sel).first
-            loc.click(timeout=TIMEOUT)
-            return True
+            loc = page.locator(sel).filter(has_text=text).first
+            if loc.is_visible(timeout=500):
+                loc.click(timeout=TIMEOUT)
+                return True
         except Exception:
             continue
 
-    # Fallback: find the option by matching text within choice containers
-    # and try clicking, or determine the option number for key press
+    # Strategy 2: get_by_role for semantic checkbox/radio elements
+    for role in ["checkbox", "radio", "option"]:
+        try:
+            loc = page.get_by_role(role, name=text).first
+            if loc.is_visible(timeout=500):
+                loc.click(timeout=TIMEOUT)
+                return True
+        except Exception:
+            continue
+
+    # Strategy 3: find by text, then click the parent container
+    try:
+        text_el = page.get_by_text(text, exact=True).first
+        if text_el.is_visible(timeout=500):
+            # Try clicking the parent challenge-choice container instead of the text itself
+            parent = text_el.locator('xpath=ancestor::*[@data-test="challenge-choice"]').first
+            try:
+                parent.click(timeout=TIMEOUT)
+                return True
+            except Exception:
+                # If no parent container found, click the text element directly
+                text_el.click(timeout=TIMEOUT)
+                return True
+    except Exception:
+        pass
+
+    # Strategy 4: iterate all choice containers and match by inner text
     try:
         choices = page.locator('[data-test="challenge-choice"]')
         count = choices.count()
@@ -1331,7 +1358,6 @@ def click_challenge_option(page, text):
                     choice.click(timeout=TIMEOUT)
                     return True
                 except Exception:
-                    # If click fails, try pressing the option number (1-indexed)
                     key = str(i + 1)
                     print(f"  Click failed, pressing key '{key}' for option '{text}'")
                     page.keyboard.press(key)
@@ -1339,7 +1365,7 @@ def click_challenge_option(page, text):
     except Exception:
         pass
 
-    # Last resort: try pressing number keys by finding which option contains the text
+    # Strategy 5: press number key by matching option text
     try:
         choices = page.locator('[data-test="challenge-choice"]')
         count = choices.count()
@@ -1353,11 +1379,10 @@ def click_challenge_option(page, text):
     except Exception:
         pass
 
-    # Fallback: try word token matching (some "multiple_choice" exercises use word bank buttons)
+    # Fallback: try word token matching (some exercises use word bank buttons)
     if click_word_token(page, text):
         return True
 
-    # Last resort: generic click
     return click_target_generic(page, text)
 
 
