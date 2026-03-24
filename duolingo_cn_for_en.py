@@ -990,7 +990,7 @@ def handle_post_answer(page):
 
     human_sleep(0.5, 1.5)
 
-    click_button(page, ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"])
+    click_button(page, ["Check", "CHECK"])
     human_sleep(0.3, 0.8)
 
     check_answer_feedback(page)
@@ -1575,7 +1575,7 @@ def main():
                 # Handle tracing exercises — skip (cannot automate mouse drawing)
                 if q_type == "tracing":
                     print("  ✏️ Tracing exercise detected — skipping (cannot automate)")
-                    click_button(page, ["Skip", "SKIP", "BỎ QUA", "CAN'T USE KEYBOARD"])
+                    click_button(page, ["Skip", "SKIP", "CAN'T USE KEYBOARD"])
                     human_sleep(0.5, 1.0)
                     click_button(page, ["Continue", "CONTINUE"])
                     human_sleep(0.5, 1.0)

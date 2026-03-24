@@ -1023,6 +1023,83 @@ def make_wrong_actions(result):
     return None  # Can't make wrong answer, just answer correctly
 
 
+def refine_multiple_choice_actions(page, result):
+    """For multiple_choice/checkbox, read actual visible options and ask GPT to pick the right one."""
+    try:
+        choices = page.locator('[data-test="challenge-choice"]')
+        count = choices.count()
+        if count == 0:
+            return
+
+        visible_options = []
+        for i in range(count):
+            try:
+                text = choices.nth(i).inner_text(timeout=500).strip()
+                if text:
+                    visible_options.append({"index": i + 1, "text": text})
+            except Exception:
+                continue
+
+        if not visible_options:
+            return
+
+        question = result.get("question", "")
+        ai_answer = result.get("answer", "")
+        q_type = result.get("type", "")
+        cached = answer_cache.get(question, "")
+
+        # Check if current actions already target a visible option
+        current_actions = result.get("actions", [])
+        for act in current_actions:
+            target = act.get("target", "")
+            key = act.get("key", "")
+            if key and key.isdigit() and int(key) <= count:
+                return
+            for opt in visible_options:
+                if target and target.lower() in opt["text"].lower():
+                    return
+
+        print(f"  📋 Visible options: {[o['text'] for o in visible_options]}")
+        print(f"  🔄 Picking correct option from visible choices...")
+
+        options_str = "\n".join(f'  {o["index"]}. {o["text"]}' for o in visible_options)
+        prompt_parts = [
+            f'A Duolingo {q_type} exercise.',
+            f'\nQuestion: {question}',
+        ]
+        if cached:
+            prompt_parts.append(f'Previously known correct answer: {cached}')
+        if ai_answer and ai_answer != cached:
+            prompt_parts.append(f'AI suggested answer: {ai_answer}')
+        prompt_parts.append(f'\nVisible options:\n{options_str}')
+        if q_type == "checkbox":
+            prompt_parts.append(
+                '\nWhich option(s) are correct? Reply with ONLY the number(s) separated by commas.\n'
+                'Example: 1,2'
+            )
+        else:
+            prompt_parts.append(
+                '\nWhich option number is correct? Reply with ONLY the number, nothing else.\n'
+                'Example: 1'
+            )
+
+        r = client.responses.create(
+            model="gpt-4o-mini",
+            input=[{"role": "user", "content": "\n".join(prompt_parts)}],
+        )
+        picked = r.output_text.strip().replace(" ", "")
+
+        keys = [k.strip() for k in picked.split(",") if k.strip().isdigit()]
+        if keys:
+            result["actions"] = [{"action": "press", "key": k} for k in keys]
+            picked_texts = [o["text"] for o in visible_options if str(o["index"]) in keys]
+            print(f"  ✅ Picked option(s): {keys} → {picked_texts}")
+        else:
+            print(f"  ⚠ Could not parse GPT response: '{picked}'")
+    except Exception as e:
+        print(f"  ⚠ Multiple choice refinement failed: {e}")
+
+
 def refine_word_bank_actions(page, result):
     """For word_bank exercises, read actual DOM tokens and ask GPT to arrange them.
     Always runs to ensure both correct words AND correct order.
@@ -2422,7 +2499,9 @@ def main():
                     and should_answer_wrong()
                 )
 
-                # For word_bank: read actual DOM tokens and refine actions
+                # Refine actions using actual visible options/tokens from DOM
+                if q_type in ("multiple_choice", "checkbox") and not force_wrong:
+                    refine_multiple_choice_actions(page, result)
                 if q_type == "word_bank" and not force_wrong:
                     refine_word_bank_actions(page, result)
 
