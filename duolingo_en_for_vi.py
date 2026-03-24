@@ -1057,10 +1057,16 @@ def refine_word_bank_actions(page, result):
         prompt_parts.append(
             '\nArrange the words in the correct order. Not all words need to be used. '
             'Use each word at most once.\n'
-            'IMPORTANT: The order matters — each word fills the next blank in the sentence.\n'
-            'If a known correct answer is provided, use it to determine the exact word order.\n'
+            'CRITICAL RULES:\n'
+            '- The order matters — each word fills the next blank in the sentence.\n'
+            '- Words may be SPLIT across multiple tokens. For example, "o\'clock" might be two separate '
+            'tokens: "o" and "\'clock". You MUST include ALL parts.\n'
+            '- Similarly, "don\'t" might be "don" + "\'t", or compound words may be split.\n'
+            '- Compare your answer with the available tokens — every token you use must EXACTLY match '
+            'one item in the available list.\n'
+            '- If a known correct answer is provided, use it to determine the exact word order.\n'
             'Reply with ONLY the words separated by " | " (pipe), nothing else.\n'
-            'Example: word1 | word2 | word3'
+            'Example: Can | we | check | out | at | four | o | \'clock'
         )
 
         r = client.responses.create(
