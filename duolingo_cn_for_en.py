@@ -1046,33 +1046,6 @@ def click_start_xp_button(page):
         return False
 
 
-def get_hearts(page):
-    """Get current heart count from the top-right corner. Returns int or -1 if can't detect."""
-    try:
-        # Hearts shown near the heart icon in top bar, look for the img with hearts
-        # The heart count is typically in a span/div near the heart icon
-        heart_loc = page.locator('[href="/hearts"] span, [data-test="hearts"] span, a[href*="heart"] span').first
-        text = heart_loc.inner_text(timeout=2000).strip()
-        return int(text)
-    except Exception:
-        pass
-    # Fallback: screenshot top-right and parse with regex from page text
-    try:
-        body = page.inner_text("body", timeout=2000)
-        # Look for heart icon followed by a number (usually "♥ 5" or just "5" near hearts)
-        import re as _re
-        # On the learn page, hearts show as a number near top-right
-        # Try to find it via the specific heart element
-        heart_el = page.locator('img[src*="heart"], svg[class*="heart"], [class*="heart"]').first
-        sibling = heart_el.locator("..").inner_text(timeout=1000).strip()
-        nums = _re.findall(r'\d+', sibling)
-        if nums:
-            return int(nums[-1])
-    except Exception:
-        pass
-    return -1  # Can't detect
-
-
 def check_no_hearts(page):
     """Check if the 'You need hearts' popup is showing. Returns True if out of hearts."""
     try:
@@ -1093,127 +1066,6 @@ def start_practice_mode(page):
     click_button(page, ["Continue", "CONTINUE", "Start", "START", "PRACTICE", "Practice"])
     human_sleep(0.5, 1.0)
     return True
-
-
-def start_lesson(page):
-    """Start a target practice lesson."""
-    print("Looking for a lesson to start...")
-    start_practice_mode(page)
-    human_sleep(0.5, 1.0)
-
-    # Click START / START +XP button if visible
-    if click_start_xp_button(page):
-        return True
-
-    popup_texts = ["START", "Start", "START LESSON", "CONTINUE", "Continue",
-                   "PRACTICE"]
-    for text in popup_texts:
-        try:
-            btn = page.locator(f'button:has-text("{text}")').first
-            btn.click(timeout=1000)
-            print(f"  Started lesson via: '{text}'")
-            human_sleep(0.5, 1.5)
-            return True
-        except Exception:
-            continue
-
-    return True
-
-
-_profile_raw = os.getenv("DUO_PROFILE_URL", "")
-PROFILE_URL = (
-    _profile_raw if _profile_raw.startswith("http")
-    else f"https://www.duolingo.com/profile/{_profile_raw}" if _profile_raw
-    else ""
-)
-
-
-def get_xp(page):
-    """Get current user XP by navigating to profile page and reading stats."""
-    try:
-        # Find profile URL from the page if not set
-        profile_url = PROFILE_URL
-        if not profile_url:
-            # Try clicking profile link to find username
-            try:
-                profile_link = page.locator('a[href*="/profile/"]').first
-                profile_url = "https://www.duolingo.com" + profile_link.get_attribute("href", timeout=2000)
-            except Exception:
-                # Fallback: navigate to profile via sidebar
-                profile_url = "https://www.duolingo.com/profile"
-
-        # Save current URL to return later
-        current_url = page.url
-
-        # Cache-bust: append timestamp to force fresh data
-        cache_bust = f"?cb={int(time.time())}"
-        page.goto(profile_url + cache_bust, wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
-
-        # Scrape stats from profile page
-        xp = 0
-        streak = 0
-
-        page_text = page.inner_text("body")
-
-        # Find XP: prioritize "Total XP" / "Tổng điểm KN" label (not achievement text)
-        xp_found = False
-
-        # 1. English: number right before "Total XP"
-        total_xp_match = re.search(r'([\d,]+)[\s\n]+Total XP', page_text)
-        if total_xp_match:
-            xp = int(total_xp_match.group(1).replace(",", ""))
-            print(f"    XP from 'Total XP': {xp}")
-            xp_found = True
-
-        # 2. Vietnamese: number right before "Tổng điểm KN"
-        if not xp_found:
-            vi_match = re.search(r'([\d,]+)[\s\n]+Tổng điểm KN', page_text)
-            if vi_match:
-                xp = int(vi_match.group(1).replace(",", ""))
-                print(f"    XP from 'Tổng điểm KN': {xp}")
-                xp_found = True
-
-        # 3. Vietnamese fallback: search nearby text
-        if not xp_found and 'Tổng điểm KN' in page_text:
-            idx = page_text.index('Tổng điểm KN')
-            nearby = page_text[max(0, idx - 50):idx]
-            nums = re.findall(r'([\d,]+)', nearby)
-            if nums:
-                xp = int(nums[-1].replace(",", ""))
-                print(f"    XP from nearby 'Tổng điểm KN': {xp}")
-                xp_found = True
-
-        if not xp_found:
-            print(f"    ⚠ Could not find XP on profile page")
-
-        # Match streak: "1 day streak" (English) or "NNN\nNgày streak" (Vietnamese)
-        streak_match = re.search(r'(\d+)\s*day\s*streak', page_text, re.IGNORECASE)
-        if not streak_match:
-            streak_match = re.search(r'(\d+)\s*\n?\s*Ngày streak', page_text, re.IGNORECASE)
-        if streak_match:
-            streak = int(streak_match.group(1))
-
-        # Go back to previous page
-        page.goto(current_url)
-        page.wait_for_load_state("domcontentloaded")
-        page.wait_for_timeout(1500)
-
-        return {"totalXp": xp, "streak": streak}
-
-    except Exception as e:
-        print(f"  ⚠ Could not fetch XP: {e}")
-        return None
-
-
-def print_xp_summary(label, xp_data):
-    """Print XP summary."""
-    if not xp_data:
-        print(f"  {label}: Could not retrieve XP data")
-        return
-    print(f"  {label}:")
-    print(f"    Total XP: {xp_data['totalXp']}")
-    print(f"    Streak: {xp_data['streak']} days")
 
 
 def login_with_jwt(context, page):
@@ -1469,12 +1321,10 @@ def main():
                 raise Exception(f"Login failed after retry. Current URL: {page.url}")
             context.storage_state(path=SESSION_FILE)
 
-        xp_before = None
         in_practice_mode = True
         start_practice_mode(page)
 
         global MAX_WRONG_PER_LESSON
-        xp_after = None
         consecutive_no_question = 0
         question_count = 0
         wrong_count = 0  # Track deliberate wrong answers per lesson
@@ -1502,7 +1352,7 @@ def main():
                     consecutive_no_question += 1
                     print("  No question detected, waiting...")
 
-                    # Detect if we're stuck on a login screen (not a real lesson)
+                    # Detect if we're stuck on a login screen
                     q_lower = question.lower()
                     if any(kw in q_lower for kw in ["log in", "login", "sign in", "sign up", "create account"]):
                         print("  ⚠ Login/signup screen detected! Session may be invalid.")
@@ -1524,53 +1374,64 @@ def main():
                         consecutive_no_question = 0
                         continue
 
-                    # Check if lesson is complete (URL changed back to /learn)
-                    current_url = page.url
-                    is_on_learn_page = ("/learn" in current_url or "/practice-hub" in current_url) and "/lesson" not in current_url
-
-                    # Try clicking continue/next in case we're on a result screen
-                    click_button(
+                    # Try clicking Continue button
+                    found_continue = click_button(
                         page,
-                        ["Continue", "CONTINUE", "Next", "START", "Start"],
+                        ["Continue", "CONTINUE", "Next"],
                     )
 
-                    # If stuck with no questions answered, something is wrong
-                    if consecutive_no_question >= 5 and question_count == 0:
-                        print("  ⚠ Stuck: no questions detected after 5 attempts. Taking screenshot...")
-                        try:
-                            page.screenshot(path="stuck_debug.png")
-                        except Exception:
-                            pass
-                        raise Exception(f"No questions found. URL: {page.url}")
+                    if not found_continue:
+                        # No Continue button → lesson is complete
+                        current_url = page.url
+                        is_on_learn_page = ("/learn" in current_url or "/practice-hub" in current_url) and "/lesson" not in current_url
 
-                    if is_on_learn_page or (consecutive_no_question >= 5 and question_count > 0):
-                        if is_on_learn_page:
-                            print("  ✅ Lesson complete! (back on learn page)")
-                        else:
-                            print("  ✅ Lesson seems done. Starting next lesson...")
+                        if is_on_learn_page or question_count > 0:
+                            print("  ✅ Lesson complete! (no Continue button)")
 
-                        lesson_count += 1
-                        print(f"  📊 Lessons completed: {lesson_count}")
+                            lesson_count += 1
+                            print(f"  📊 Lessons completed: {lesson_count}")
 
-                        if MAX_LESSONS > 0 and lesson_count >= MAX_LESSONS:
-                            print(f"\n🎉 Completed {lesson_count} lessons. Done!")
-                            break
+                            if MAX_LESSONS > 0 and lesson_count >= MAX_LESSONS:
+                                print(f"\n🎉 Completed {lesson_count} lessons. Done!")
+                                break
 
-                        # Go straight to next practice
-                        start_practice_mode(page)
-                        in_practice_mode = True
-                        consecutive_no_question = 0
-                        wrong_count = 0
-                        MAX_WRONG_PER_LESSON = 0
-                        question_count = 0
-                        context.storage_state(path=SESSION_FILE)
-                        print("\n🆕 New practice started!")
+                            start_practice_mode(page)
+                            in_practice_mode = True
+                            consecutive_no_question = 0
+                            wrong_count = 0
+                            MAX_WRONG_PER_LESSON = 0
+                            question_count = 0
+                            context.storage_state(path=SESSION_FILE)
+                            print("\n🆕 New practice started!")
+                        elif consecutive_no_question >= 5:
+                            print("  ⚠ Stuck: no questions and no Continue button.")
+                            try:
+                                page.screenshot(path="stuck_debug.png")
+                            except Exception:
+                                pass
+                            raise Exception(f"No questions found. URL: {page.url}")
 
                     human_sleep(0.5, 1.0)
                     continue
 
                 consecutive_no_question = 0
                 question_count += 1
+
+                # Check if Continue button is already visible (answer already submitted)
+                already_answered = False
+                try:
+                    for cont_text in ["Continue", "CONTINUE"]:
+                        cont_btn = page.locator(f'button:has-text("{cont_text}")').first
+                        if cont_btn.is_visible(timeout=300):
+                            print("  ⏩ Continue button already visible, clicking...")
+                            cont_btn.click(timeout=1000)
+                            human_sleep(0.3, 0.6)
+                            already_answered = True
+                            break
+                except Exception:
+                    pass
+                if already_answered:
+                    continue
 
                 # Handle tracing exercises — skip (cannot automate mouse drawing)
                 if q_type == "tracing":
