@@ -410,7 +410,7 @@ def handle_listening(page, result):
 
     print(f"  Click order: {words_to_click}")
     for word in words_to_click:
-        human_sleep(0.1, 0.3)
+        human_sleep(0.05, 0.15)
         click_target(page, word)
 
     # Clean up temp file
@@ -515,7 +515,7 @@ def handle_audio_matching(page, result):
         # Step 2: Press the left card number to play its audio
         time.sleep(0.2)
         page.keyboard.press(left_key)
-        human_sleep(0.3, 0.5)
+        human_sleep(0.1, 0.2)
 
         if not recording:
             print(f"    ⚠ No audio support, using GPT vision fallback...")
@@ -552,7 +552,7 @@ def handle_audio_matching(page, result):
                     print(f"    Pressing right card [{r['key']}] for '{matched_text}'")
                     page.keyboard.press(r["key"])
                     matched_right_keys.add(r["text"])
-                    human_sleep(0.15, 0.35)
+                    human_sleep(0.08, 0.15)
                     break
             else:
                 for r in right_options:
@@ -563,7 +563,7 @@ def handle_audio_matching(page, result):
                         print(f"    Pressing right card [{r['key']}] for '{r['text']}' (fuzzy)")
                         page.keyboard.press(r["key"])
                         matched_right_keys.add(r["text"])
-                        human_sleep(0.15, 0.35)
+                        human_sleep(0.08, 0.15)
                         break
 
     return len(matched_right_keys) > 0
@@ -619,7 +619,7 @@ def handle_audio_fill_blank(page, result):
             continue
         time.sleep(0.3)
         page.keyboard.press(key)
-        human_sleep(0.3, 0.5)
+        human_sleep(0.1, 0.2)
         audio_path = finish_recording(recording)
         if audio_path:
             transcript = transcribe_audio(audio_path)
@@ -1170,6 +1170,37 @@ def refine_word_bank_actions(page, result):
 
     print(f"  📋 Word bank tokens: {available_words}")
 
+    # Quick match: if cached answer can be built from exact token matches, use directly
+    if cached:
+        cached_words = cached.rstrip('.').strip()
+        # Check if the full cached answer is a single token
+        available_lower = [w.lower() for w in available_words]
+        if cached_words.lower() in available_lower:
+            idx = available_lower.index(cached_words.lower())
+            result["actions"] = [{"action": "click", "target": available_words[idx]}]
+            print(f"  ✅ Cached answer matches token exactly: '{available_words[idx]}'")
+            return
+        # Check if cached answer words all exist as individual tokens
+        cached_split = cached_words.split()
+        matched_tokens = []
+        remaining = list(available_words)
+        all_matched = True
+        for word in cached_split:
+            found = False
+            for rw in remaining:
+                if rw.lower() == word.lower():
+                    matched_tokens.append(rw)
+                    remaining.remove(rw)
+                    found = True
+                    break
+            if not found:
+                all_matched = False
+                break
+        if all_matched and matched_tokens:
+            result["actions"] = [{"action": "click", "target": w} for w in matched_tokens]
+            print(f"  ✅ Cached answer matched tokens: {matched_tokens}")
+            return
+
     print(f"  🔄 Arranging words using actual word bank...")
     try:
         prompt_parts = [
@@ -1254,9 +1285,9 @@ def execute_actions(page, result, force_wrong=False):
 
         if i > 0:
             if is_matching and i % 2 == 0:
-                human_sleep(0.15, 0.35)
+                human_sleep(0.08, 0.15)
             else:
-                human_sleep(0.15, 0.4)
+                human_sleep(0.08, 0.15)
 
         if action == "press":
             print(f"  [{i+1}] Pressing key: '{key}'")
@@ -1265,7 +1296,7 @@ def execute_actions(page, result, force_wrong=False):
         elif action == "click":
             print(f"  [{i+1}] Clicking: '{target}'")
             click_target(page, target, q_type=q_type)
-            time.sleep(0.15)
+            time.sleep(0.08)
 
         elif action == "type":
             print(f"  [{i+1}] Typing: '{value}'")
@@ -1598,14 +1629,14 @@ def type_answer(page, text):
                 loc.fill("")
             # Type character by character with random delays (human-like)
             for char in to_type:
-                loc.type(char, delay=random.randint(15, 50))
+                loc.type(char, delay=random.randint(8, 25))
             return True
         except Exception:
             continue
 
     # Fallback: press keys directly
     try:
-        page.keyboard.type(text, delay=random.randint(15, 50))
+        page.keyboard.type(text, delay=random.randint(8, 25))
         return True
     except Exception:
         print(f"  ⚠ Could not type answer")
@@ -1726,11 +1757,10 @@ def capture_correct_answer(page, question_text=""):
 def handle_post_answer(page, question_text=""):
     """Click Check, Continue, or Next after answering."""
 
-    human_sleep(0.2, 0.5)
+    human_sleep(0.1, 0.2)
 
-    # Click CHECK / KIỂM TRA button
     click_button(page, ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"])
-    human_sleep(0.2, 0.5)
+    human_sleep(0.15, 0.3)
 
     # Verify a feedback banner actually appeared (correct or incorrect)
     banner_visible = False
@@ -1774,7 +1804,7 @@ def handle_post_answer(page, question_text=""):
 
     # Click CONTINUE / TIẾP TỤC button (appears after check)
     click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
-    human_sleep(0.3, 0.6)
+    human_sleep(0.15, 0.3)
 
 
 def skip_if_stuck(page):
@@ -1828,7 +1858,7 @@ def click_start_xp_button(page):
             el = attempt()
             el.click(timeout=3000)
             print(f"  Clicked 'START +XP' button")
-            human_sleep(0.2, 0.5)
+            human_sleep(0.1, 0.2)
             return True
         except Exception:
             continue
@@ -1836,7 +1866,7 @@ def click_start_xp_button(page):
     print("  ⚠ Could not find 'START +XP' button, trying keyboard Enter...")
     try:
         page.keyboard.press("Enter")
-        human_sleep(0.2, 0.5)
+        human_sleep(0.1, 0.2)
         return True
     except Exception:
         return False
@@ -1893,14 +1923,14 @@ def start_lesson(page):
     """Auto-detect and start the next available lesson."""
 
     print("Looking for a lesson to start...")
-    human_sleep(0.2, 0.4)
+    human_sleep(0.1, 0.2)
 
     # Check if out of hearts
     if check_no_hearts(page):
         print("  💔 Out of hearts! Switching to practice mode...")
         # Close popup first
         click_button(page, ["NO THANKS", "No thanks", "CLOSE", "Close", "✕"])
-        human_sleep(0.2, 0.4)
+        human_sleep(0.1, 0.2)
         start_practice_mode(page)
         return True
 
@@ -1913,7 +1943,7 @@ def start_lesson(page):
             loc.click(timeout=2000)
             print(f"  Clicked '{text}' on learn page")
             clicked_start = True
-            human_sleep(0.2, 0.4)
+            human_sleep(0.1, 0.2)
             break
         except Exception:
             continue
@@ -1929,7 +1959,7 @@ def start_lesson(page):
                 loc.click(timeout=1500)
                 print(f"  Clicked: {sel}")
                 clicked_start = True
-                human_sleep(0.2, 0.4)
+                human_sleep(0.1, 0.2)
                 break
             except Exception:
                 continue
@@ -1951,7 +1981,7 @@ def start_lesson(page):
             btn = page.locator(f'button:has-text("{text}")').first
             btn.click(timeout=1000)
             print(f"  Started lesson via: '{text}'")
-            human_sleep(0.2, 0.5)
+            human_sleep(0.1, 0.2)
             return True
         except Exception:
             continue
@@ -2219,22 +2249,23 @@ def main():
         wrong_count = 0  # Track deliberate wrong answers per lesson
         lesson_count = 0
 
+        session_start = time.time()
+
         while True:
             try:
-                # Wait for page to render before capturing
-                human_sleep(0.8, 1.5)
+                q_start = time.time()
 
-                print("\n📸 Capturing screen...")
+                human_sleep(0.5, 0.8)
+
                 img = page.screenshot(type="jpeg", quality=80)
-
-                print("🤖 Analyzing with AI...")
                 result = analyze_screen(img)
 
                 q_type = result.get("type", "unknown")
                 question = result.get("question", "")
                 answer = result.get("answer", "")
 
-                print(f"  Type: {q_type}")
+                elapsed_session = time.time() - session_start
+                print(f"\n⏱ {elapsed_session:.0f}s | Type: {q_type}")
                 print(f"  Question: {question}")
                 print(f"  Answer: {answer}")
 
@@ -2256,7 +2287,7 @@ def main():
                     if check_no_hearts(page):
                         print("  💔 Out of hearts! Switching to practice...")
                         click_button(page, ["NO THANKS", "No thanks", "CLOSE", "Close", "✕"])
-                        human_sleep(0.2, 0.5)
+                        human_sleep(0.1, 0.2)
                         start_practice_mode(page)
                         in_practice_mode = True
                         consecutive_no_question = 0
@@ -2278,7 +2309,7 @@ def main():
                             print("  ✅ Lesson complete! (back on learn page)")
 
                             lesson_count += 1
-                            print(f"  📊 Lessons completed: {lesson_count}")
+                            print(f"  📊 Lessons completed: {lesson_count} | Total time: {time.time() - session_start:.0f}s")
 
                             if MAX_LESSONS > 0 and lesson_count >= MAX_LESSONS:
                                 print(f"\n🎉 Completed {lesson_count} lessons. Done!")
@@ -2311,7 +2342,7 @@ def main():
                             print("  ✅ Lesson complete! (no Continue button for 3 checks)")
 
                             lesson_count += 1
-                            print(f"  📊 Lessons completed: {lesson_count}")
+                            print(f"  📊 Lessons completed: {lesson_count} | Total time: {time.time() - session_start:.0f}s")
 
                             if MAX_LESSONS > 0 and lesson_count >= MAX_LESSONS:
                                 print(f"\n🎉 Completed {lesson_count} lessons. Done!")
@@ -2346,7 +2377,7 @@ def main():
                                 pass
                             raise Exception(f"No questions found. URL: {page.url}")
 
-                    human_sleep(0.2, 0.5)
+                    human_sleep(0.1, 0.2)
                     continue
 
                 consecutive_no_question = 0
@@ -2365,7 +2396,7 @@ def main():
                                 cont_btn.click(timeout=1000)
                             except Exception:
                                 pass
-                            human_sleep(0.3, 0.6)
+                            human_sleep(0.1, 0.2)
                             break
                     except Exception:
                         continue
@@ -2413,70 +2444,70 @@ def main():
                 # Handle audio matching exercises (Chọn cặp từ with audio)
                 if q_type == "audio_matching":
                     print("  🔊 Audio matching exercise detected (Chọn cặp từ)")
-                    human_sleep(0.1, 0.3)
+                    human_sleep(0.05, 0.15)
                     executed = handle_audio_matching(page, result)
                     if executed:
                         handle_post_answer(page, q_text)
                     else:
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                         skip_if_stuck(page)
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                         click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                     continue
 
                 # Handle speaking exercises (Đọc câu này) — skip, no mic
                 if q_type == "speaking":
                     print("  🎤 Speaking exercise detected (Đọc câu này) — skipping (no mic)")
                     skip_if_stuck(page)
-                    human_sleep(0.2, 0.4)
+                    human_sleep(0.1, 0.2)
                     click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
-                    human_sleep(0.2, 0.4)
+                    human_sleep(0.1, 0.2)
                     continue
 
                 # Handle audio fill-in-the-blank (Nghe và tìm từ còn thiếu)
                 if q_type == "audio_fill_blank":
                     print("  🔊 Audio fill-blank exercise detected (Nghe và tìm từ còn thiếu)")
-                    human_sleep(0.1, 0.3)
+                    human_sleep(0.05, 0.15)
                     executed = handle_audio_fill_blank(page, result)
                     if executed:
                         handle_post_answer(page, q_text)
                     else:
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                         skip_if_stuck(page)
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                         click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                     continue
 
                 # Handle listen-and-type (Nhập từ còn thiếu)
                 if q_type == "listen_and_type":
                     print("  🔊 Listen-and-type exercise detected (Nhập từ còn thiếu)")
-                    human_sleep(0.1, 0.3)
+                    human_sleep(0.05, 0.15)
                     executed = handle_listen_and_type(page, result)
                     if executed:
                         handle_post_answer(page, q_text)
                     else:
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                         skip_if_stuck(page)
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                         click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                     continue
 
                 # Handle listening exercises separately
                 if q_type == "listening":
                     print("  🎧 Listening exercise detected")
-                    human_sleep(0.1, 0.3)
+                    human_sleep(0.05, 0.15)
                     executed = handle_listening(page, result)
                     if executed:
                         handle_post_answer(page, q_text)
                     else:
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                         skip_if_stuck(page)
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                         click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                     continue
 
                 # Decide if we should answer wrong (for human simulation)
@@ -2497,13 +2528,13 @@ def main():
                 # Thinking time based on answer complexity
                 num_actions = len(result.get("actions", []))
                 if num_actions <= 1:
-                    think_time = random.uniform(0.1, 0.3)
+                    think_time = random.uniform(0.05, 0.15)
                 elif num_actions <= 3:
-                    think_time = random.uniform(0.2, 0.5)
+                    think_time = random.uniform(0.1, 0.2)
                 else:
-                    think_time = random.uniform(0.3, 0.6)
+                    think_time = random.uniform(0.15, 0.3)
                 if force_wrong:
-                    think_time = random.uniform(0.1, 0.3)
+                    think_time = random.uniform(0.05, 0.15)
                 time.sleep(think_time)
 
                 # Execute the actions
@@ -2515,16 +2546,19 @@ def main():
                     if force_wrong:
                         wrong_count += 1
                         print(f"  ❌ Wrong answers so far: {wrong_count}/{MAX_WRONG_PER_LESSON}")
-                        human_sleep(0.2, 0.4)
+                        human_sleep(0.1, 0.2)
                         click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
-                        human_sleep(0.3, 0.5)
+                        human_sleep(0.1, 0.2)
                 else:
                     print("  No actions executed, skipping...")
                     skip_if_stuck(page)
 
+                q_elapsed = time.time() - q_start
+                print(f"  ⏱ Question took {q_elapsed:.1f}s")
+
             except json.JSONDecodeError as e:
                 print(f"  ⚠ AI returned invalid JSON: {e}")
-                human_sleep(0.2, 0.5)
+                human_sleep(0.1, 0.2)
 
             except KeyboardInterrupt:
                 print(f"\nStopped by user after {question_count} questions, {lesson_count} lessons completed")
@@ -2533,7 +2567,7 @@ def main():
             except Exception as e:
                 print(f"  ⚠ Error: {e}")
                 traceback.print_exc()
-                human_sleep(0.2, 0.5)
+                human_sleep(0.1, 0.2)
 
         try:
             browser.close()
