@@ -2,12 +2,12 @@ name: Duolingo Daily Practice
 
 on:
   schedule:
-    # Run daily at 7:00 AM UTC (adjust to your timezone)
     - cron: '0 7 * * *'
   workflow_dispatch:
 
 jobs:
-  practice:
+  practice-cn:
+    name: Chinese for English
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -25,22 +25,22 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
-      - name: Run practice rounds
+      - name: Run CN practice rounds
         env:
           DUO_EMAIL: ${{ secrets.DUO_EMAIL }}
           DUO_PASSWORD: ${{ secrets.DUO_PASSWORD }}
           DUO_JWT: ${{ secrets.DUO_JWT }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          DUO_PROFILE_URL: ${{ secrets.DUO_PROFILE_URL }}
           HEADLESS: 'true'
+          NO_AUDIO: 'true'
         run: |
           ROUNDS=$((RANDOM % 3 + 2))
-          echo "🎲 This session: $ROUNDS rounds"
+          echo "🎲 CN session: $ROUNDS rounds"
           for i in $(seq 1 $ROUNDS); do
             LESSONS=$((RANDOM % 16 + 5))
             echo ""
             echo "========================================="
-            echo "🔄 Round $i/$ROUNDS — $LESSONS lessons"
+            echo "🔄 CN Round $i/$ROUNDS — $LESSONS lessons"
             echo "========================================="
             MAX_LESSONS=$LESSONS python duolingo_cn_for_en.py || true
 
@@ -52,31 +52,76 @@ jobs:
             fi
           done
 
-      - name: Save session for next run
+      - name: Save CN artifacts
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: duo-session
-          path: duo_session.json
-          retention-days: 7
-
-      - name: Save debug screenshots
-        if: always()
-        uses: actions/upload-artifact@v5
-        with:
-          name: debug-screenshots
+          name: cn-debug
           path: |
+            en_duo_session.json
             login_debug.png
             login_failed.png
             stuck_debug.png
+            playwright-videos/
           retention-days: 3
           if-no-files-found: ignore
 
-      - name: Save Playwright recordings
+  practice-vi:
+    name: English for Vietnamese
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install python-dotenv playwright openai
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run VI practice rounds
+        env:
+          VI_DUO_EMAIL: ${{ secrets.VI_DUO_EMAIL }}
+          VI_DUO_PASSWORD: ${{ secrets.VI_DUO_PASSWORD }}
+          DUO_JWT: ${{ secrets.DUO_JWT }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          HEADLESS: 'true'
+          NO_AUDIO: 'true'
+        run: |
+          ROUNDS=$((RANDOM % 3 + 2))
+          echo "🎲 VI session: $ROUNDS rounds"
+          for i in $(seq 1 $ROUNDS); do
+            LESSONS=$((RANDOM % 16 + 5))
+            echo ""
+            echo "========================================="
+            echo "🔄 VI Round $i/$ROUNDS — $LESSONS lessons"
+            echo "========================================="
+            MAX_LESSONS=$LESSONS python duolingo_en_for_vi.py || true
+
+            if [ "$i" -lt "$ROUNDS" ]; then
+              SLEEP_MIN=$((RANDOM % 61 + 60))
+              echo ""
+              echo "😴 Sleeping ${SLEEP_MIN} minutes before next round..."
+              sleep $((SLEEP_MIN * 60))
+            fi
+          done
+
+      - name: Save VI artifacts
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: playwright-recordings
-          path: playwright-videos/
+          name: vi-debug
+          path: |
+            vi_duo_session.json
+            login_debug.png
+            login_failed.png
+            stuck_debug.png
+            playwright-videos/
           retention-days: 3
           if-no-files-found: ignore
