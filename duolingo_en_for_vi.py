@@ -2202,10 +2202,11 @@ def main():
                         consecutive_no_question = 0
                         continue
 
-                    # Try clicking Continue button
+                    # Try clicking Continue / Start lesson button
                     found_continue = click_button(
                         page,
-                        ["TIẾP TỤC", "Tiếp tục", "Continue", "CONTINUE", "Next"],
+                        ["TIẾP TỤC", "Tiếp tục", "Continue", "CONTINUE", "Next",
+                         "BẮT ĐẦU BÀI HỌC", "BẮT ĐẦU", "Bắt đầu", "START", "Start"],
                     )
 
                     if not found_continue:
