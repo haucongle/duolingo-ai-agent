@@ -2,11 +2,12 @@ name: Duolingo Daily Practice
 
 on:
   schedule:
-    - cron: '0 7 * * *'
+    - cron: '0 1 * * *'
   workflow_dispatch:
 
 jobs:
   practice-cn:
+    if: false
     name: Chinese for English
     runs-on: ubuntu-latest
     timeout-minutes: 360
