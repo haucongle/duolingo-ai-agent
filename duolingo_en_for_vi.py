@@ -828,15 +828,33 @@ def handle_listen_and_type(page, result):
     else:
         print(f"  ⚠ No pre-filled prefix detected")
 
-    # Step 1: Try to get the missing word from cached answer first
+    # Step 1: Try to get the missing word from AI answer or cache
     missing_word = None
-    if not is_dictation and cached_answer and sentence:
-        missing_word = extract_missing_from_cached(sentence, cached_answer)
-        if missing_word:
-            print(f"  Missing word (from cache): '{missing_word}'")
-            if prefix and not missing_word.lower().startswith(prefix.lower()):
-                print(f"  ⚠ Cached word '{missing_word}' doesn't match prefix '{prefix}', discarding")
-                missing_word = None
+    q_text = result.get("question", "")
+    full_cached = answer_cache.get(q_text, "")
+
+    if not is_dictation and sentence:
+        # Try the full cached sentence first (from previous wrong answer feedback)
+        if full_cached:
+            missing_word = extract_missing_from_cached(sentence, full_cached)
+            if missing_word:
+                print(f"  Missing word (from answer cache): '{missing_word}'")
+
+        # Try the AI answer — could be a single word (direct answer) or full sentence
+        if not missing_word and cached_answer:
+            extracted = extract_missing_from_cached(sentence, cached_answer)
+            if extracted:
+                missing_word = extracted
+                print(f"  Missing word (from AI full sentence): '{missing_word}'")
+            elif len(cached_answer.split()) <= 3:
+                # AI answer is a short word/phrase — use it directly as the missing word
+                missing_word = cached_answer.strip().rstrip(".")
+                print(f"  Missing word (from AI answer): '{missing_word}'")
+
+        # Validate against prefix
+        if missing_word and prefix and not missing_word.lower().startswith(prefix.lower()):
+            print(f"  ⚠ Word '{missing_word}' doesn't match prefix '{prefix}', discarding")
+            missing_word = None
 
     # Step 2: If no cached answer, listen to the full sentence via speaker button
     full_transcript = None
@@ -1024,17 +1042,39 @@ def make_wrong_actions(result):
 
 
 def refine_multiple_choice_actions(page, result):
-    """For multiple_choice/checkbox, read actual visible options and ask GPT to pick the right one."""
+    """For multiple_choice/checkbox, always convert to key press using visible options.
+    Clicking text spans triggers word translation tooltips, so key press is more reliable.
+    """
     try:
-        choices = page.locator('[data-test="challenge-choice"]')
-        count = choices.count()
-        if count == 0:
+        # Try multiple selectors for challenge options
+        choices = None
+        is_stories = False
+        for sel in [
+            '[data-test="challenge-choice"]',
+            '[data-test="stories-choice"]',
+            '[data-test="challenge-judge-text"]',
+            'div[role="radiogroup"] > div',
+            'div[role="checkbox"]',
+            'div[role="radio"]',
+            'li[data-test]',
+        ]:
+            loc = page.locator(sel)
+            if loc.count() >= 2:
+                choices = loc
+                is_stories = "stories-choice" in sel
+                break
+        if not choices or choices.count() == 0:
             return
+        count = choices.count()
 
         visible_options = []
         for i in range(count):
             try:
-                text = choices.nth(i).inner_text(timeout=500).strip()
+                if is_stories:
+                    # stories-choice button has no text — read from parent
+                    text = choices.nth(i).locator("xpath=..").inner_text(timeout=500).strip()
+                else:
+                    text = choices.nth(i).inner_text(timeout=500).strip()
                 if text:
                     visible_options.append({"index": i + 1, "text": text})
             except Exception:
@@ -1048,15 +1088,28 @@ def refine_multiple_choice_actions(page, result):
         q_type = result.get("type", "")
         cached = answer_cache.get(question, "")
 
-        # Check if current actions already target a visible option
-        current_actions = result.get("actions", [])
-        for act in current_actions:
-            target = act.get("target", "")
-            key = act.get("key", "")
-            if key and key.isdigit() and int(key) <= count:
-                return
+        # If already a key press action, keep it (unless stories-choice which needs click)
+        if not is_stories:
+            current_actions = result.get("actions", [])
+            for act in current_actions:
+                key = act.get("key", "")
+                if key and key.isdigit() and int(key) <= count:
+                    return
+
+        # For stories-choice: use click actions on the option text
+        # For regular choices: use key press
+        def make_action(opt):
+            if is_stories:
+                return {"action": "click", "target": opt["text"]}
+            return {"action": "press", "key": str(opt["index"])}
+
+        # Try to match AI answer to a visible option directly (fast, no GPT call)
+        answer_to_match = cached or ai_answer
+        if answer_to_match:
             for opt in visible_options:
-                if target and target.lower() in opt["text"].lower():
+                if answer_to_match.lower().strip() in opt["text"].lower():
+                    result["actions"] = [make_action(opt)]
+                    print(f"  📋 Matched answer to option {opt['index']}: '{opt['text']}'")
                     return
 
         print(f"  📋 Visible options: {[o['text'] for o in visible_options]}")
@@ -1091,9 +1144,9 @@ def refine_multiple_choice_actions(page, result):
 
         keys = [k.strip() for k in picked.split(",") if k.strip().isdigit()]
         if keys:
-            result["actions"] = [{"action": "press", "key": k} for k in keys]
-            picked_texts = [o["text"] for o in visible_options if str(o["index"]) in keys]
-            print(f"  ✅ Picked option(s): {keys} → {picked_texts}")
+            matched_opts = [o for o in visible_options if str(o["index"]) in keys]
+            result["actions"] = [make_action(o) for o in matched_opts]
+            print(f"  ✅ Picked option(s): {keys} → {[o['text'] for o in matched_opts]}")
         else:
             print(f"  ⚠ Could not parse GPT response: '{picked}'")
     except Exception as e:
@@ -1381,88 +1434,95 @@ def click_target(page, text, q_type=""):
 
 def click_challenge_option(page, text):
     """Click a challenge option (checkbox/radio/choice) precisely.
-    Uses Playwright's filter() API for robust text matching (handles apostrophes, special chars).
+    Handles Duolingo's stories-choice where the button (SVG checkbox) is a sibling of the text.
     """
     TIMEOUT = 2000
-    escaped = text.replace("'", "\\'")
 
-    # Strategy 1: Playwright filter API (most robust for text with special chars)
-    filter_selectors = [
+    # Strategy 1: stories-choice — button is sibling of the text, not a container
+    # Find the text, navigate to parent, then click the stories-choice button inside it
+    try:
+        for exact in [True, False]:
+            text_el = page.get_by_text(text, exact=exact).first
+            if text_el.is_visible(timeout=500):
+                parent = text_el.locator("xpath=..")
+                btn = parent.locator('button[data-test="stories-choice"]').first
+                if btn.is_visible(timeout=300):
+                    btn.click(timeout=TIMEOUT)
+                    print(f"    Clicked stories-choice button for '{text}'")
+                    return True
+    except Exception:
+        pass
+
+    # Strategy 2: Find all stories-choice buttons, match by parent text
+    try:
+        buttons = page.locator('button[data-test="stories-choice"]')
+        count = buttons.count()
+        if count > 0:
+            for i in range(count):
+                btn = buttons.nth(i)
+                parent_text = btn.locator("xpath=..").inner_text(timeout=500).strip()
+                if text.lower() in parent_text.lower():
+                    btn.click(timeout=TIMEOUT)
+                    print(f"    Clicked stories-choice #{i+1} for '{text}'")
+                    return True
+    except Exception:
+        pass
+
+    # Strategy 3: challenge-choice containers (standard exercises)
+    choice_selectors = [
         '[data-test="challenge-choice"]',
         'div[role="checkbox"]',
         'div[role="radio"]',
-        'label',
         'div[role="listitem"]',
     ]
-    for sel in filter_selectors:
+    for sel in choice_selectors:
         try:
-            loc = page.locator(sel).filter(has_text=text).first
-            if loc.is_visible(timeout=500):
-                loc.click(timeout=TIMEOUT)
-                return True
-        except Exception:
-            continue
-
-    # Strategy 2: get_by_role for semantic checkbox/radio elements
-    for role in ["checkbox", "radio", "option"]:
-        try:
-            loc = page.get_by_role(role, name=text).first
-            if loc.is_visible(timeout=500):
-                loc.click(timeout=TIMEOUT)
-                return True
-        except Exception:
-            continue
-
-    # Strategy 3: find by text, then click the parent container
-    try:
-        text_el = page.get_by_text(text, exact=True).first
-        if text_el.is_visible(timeout=500):
-            # Try clicking the parent challenge-choice container instead of the text itself
-            parent = text_el.locator('xpath=ancestor::*[@data-test="challenge-choice"]').first
-            try:
-                parent.click(timeout=TIMEOUT)
-                return True
-            except Exception:
-                # If no parent container found, click the text element directly
-                text_el.click(timeout=TIMEOUT)
-                return True
-    except Exception:
-        pass
-
-    # Strategy 4: iterate all choice containers and match by inner text
-    try:
-        choices = page.locator('[data-test="challenge-choice"]')
-        count = choices.count()
-        for i in range(count):
-            choice = choices.nth(i)
-            choice_text = choice.inner_text(timeout=500).strip()
-            if text.lower() in choice_text.lower():
+            choices = page.locator(sel)
+            count = choices.count()
+            for i in range(count):
+                choice = choices.nth(i)
                 try:
-                    choice.click(timeout=TIMEOUT)
-                    return True
+                    choice_text = choice.inner_text(timeout=500).strip()
                 except Exception:
-                    key = str(i + 1)
-                    print(f"  Click failed, pressing key '{key}' for option '{text}'")
-                    page.keyboard.press(key)
-                    return True
-    except Exception:
-        pass
+                    continue
+                if text.lower() in choice_text.lower():
+                    try:
+                        choice.click(timeout=TIMEOUT)
+                        print(f"    Clicked container '{sel}' for '{text}'")
+                        return True
+                    except Exception:
+                        key = str(i + 1)
+                        print(f"    Container click failed, pressing key '{key}'")
+                        page.keyboard.press(key)
+                        return True
+        except Exception:
+            continue
 
-    # Strategy 5: press number key by matching option text
-    try:
-        choices = page.locator('[data-test="challenge-choice"]')
-        count = choices.count()
-        for i in range(count):
-            choice_text = choices.nth(i).inner_text(timeout=300).strip()
-            if text.lower() in choice_text.lower():
-                key = str(i + 1)
-                print(f"  Pressing key '{key}' for option '{text}'")
-                page.keyboard.press(key)
-                return True
-    except Exception:
-        pass
+    # Strategy 4: find text, click ancestor container (NEVER the text span itself)
+    for exact in [True, False]:
+        try:
+            text_el = page.get_by_text(text, exact=exact).first
+            if not text_el.is_visible(timeout=500):
+                continue
+            for ancestor_sel in [
+                'xpath=ancestor::*[@data-test="challenge-choice"]',
+                'xpath=ancestor::div[@role="checkbox"]',
+                'xpath=ancestor::div[@role="radio"]',
+                'xpath=ancestor::div[contains(@class,"choice")]',
+                'xpath=ancestor::label',
+            ]:
+                try:
+                    parent = text_el.locator(ancestor_sel).first
+                    if parent.is_visible(timeout=300):
+                        parent.click(timeout=TIMEOUT)
+                        print(f"    Clicked ancestor container for '{text}'")
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            continue
 
-    # Fallback: try word token matching (some exercises use word bank buttons)
+    # Strategy 5: word token matching
     if click_word_token(page, text):
         return True
 
@@ -2143,7 +2203,7 @@ def main():
 
         # Verify we're logged in (not redirected to login page)
         current_url = page.url
-        print(f"Current URL after navigation: {current_url}")
+        
         if not is_logged_in_url(current_url):
             print("⚠ Session expired or invalid, logging in again...")
             if not do_login():
@@ -2210,13 +2270,12 @@ def main():
                     )
 
                     if not found_continue:
-                        # No Continue button → lesson is complete
-                        # Also check if we're back on the learn page
                         current_url = page.url
                         is_on_learn_page = "/learn" in current_url and "/lesson" not in current_url
 
-                        if is_on_learn_page or question_count > 0:
-                            print("  ✅ Lesson complete! (no Continue button)")
+                        # URL already left the lesson → definitely complete
+                        if is_on_learn_page and question_count > 0:
+                            print("  ✅ Lesson complete! (back on learn page)")
 
                             lesson_count += 1
                             print(f"  📊 Lessons completed: {lesson_count}")
@@ -2225,7 +2284,6 @@ def main():
                                 print(f"\n🎉 Completed {lesson_count} lessons. Done!")
                                 break
 
-                            # Reload and start next lesson
                             print("  🔄 Reloading page for fresh state...")
                             page.goto("https://www.duolingo.com/learn")
                             page.wait_for_load_state("domcontentloaded")
@@ -2246,7 +2304,41 @@ def main():
                             question_count = 0
                             context.storage_state(path=SESSION_FILE)
                             print("\n🆕 New lesson started!")
-                        elif consecutive_no_question >= 5:
+
+                        # Still on /lesson but no Continue for 8+ tries → lesson likely done
+                        # Stories have many no-question dialogue screens, so be patient
+                        elif consecutive_no_question >= 8 and question_count > 0:
+                            print("  ✅ Lesson complete! (no Continue button for 3 checks)")
+
+                            lesson_count += 1
+                            print(f"  📊 Lessons completed: {lesson_count}")
+
+                            if MAX_LESSONS > 0 and lesson_count >= MAX_LESSONS:
+                                print(f"\n🎉 Completed {lesson_count} lessons. Done!")
+                                break
+
+                            print("  🔄 Reloading page for fresh state...")
+                            page.goto("https://www.duolingo.com/learn")
+                            page.wait_for_load_state("domcontentloaded")
+                            page.wait_for_timeout(2000)
+
+                            hearts = get_hearts(page)
+                            if hearts >= 0:
+                                print(f"  ❤️ Hearts: {hearts}/5")
+                            if 0 <= hearts < 5:
+                                start_practice_mode(page)
+                                in_practice_mode = True
+                            else:
+                                start_lesson(page)
+                                in_practice_mode = False
+                            consecutive_no_question = 0
+                            wrong_count = 0
+                            MAX_WRONG_PER_LESSON = random.randint(0, 1)
+                            question_count = 0
+                            context.storage_state(path=SESSION_FILE)
+                            print("\n🆕 New lesson started!")
+
+                        elif consecutive_no_question >= 10 and question_count == 0:
                             print("  ⚠ Stuck: no questions and no Continue button.")
                             try:
                                 page.screenshot(path="stuck_debug.png")
@@ -2260,20 +2352,24 @@ def main():
                 consecutive_no_question = 0
                 question_count += 1
 
-                # Check if Continue button is already visible (answer already submitted)
-                already_answered = False
-                try:
-                    for cont_text in ["TIẾP TỤC", "Tiếp tục", "Continue", "CONTINUE"]:
+                # Check if Continue button is already enabled (answer already submitted)
+                # The button may be visible but disabled/greyed out — only skip if it's enabled
+                continue_ready = False
+                for cont_text in ["TIẾP TỤC", "Tiếp tục", "Continue", "CONTINUE"]:
+                    try:
                         cont_btn = page.locator(f'button:has-text("{cont_text}")').first
-                        if cont_btn.is_visible(timeout=300):
-                            print("  ⏩ Continue button already visible, clicking...")
-                            cont_btn.click(timeout=1000)
+                        if cont_btn.is_visible(timeout=300) and cont_btn.is_enabled(timeout=300):
+                            continue_ready = True
+                            print(f"  ⏩ '{cont_text}' button enabled, clicking...")
+                            try:
+                                cont_btn.click(timeout=1000)
+                            except Exception:
+                                pass
                             human_sleep(0.3, 0.6)
-                            already_answered = True
                             break
-                except Exception:
-                    pass
-                if already_answered:
+                    except Exception:
+                        continue
+                if continue_ready:
                     continue
 
                 q_text = result.get("question", "")

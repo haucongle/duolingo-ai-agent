@@ -1381,12 +1381,12 @@ def main():
                     )
 
                     if not found_continue:
-                        # No Continue button → lesson is complete
                         current_url = page.url
                         is_on_learn_page = ("/learn" in current_url or "/practice-hub" in current_url) and "/lesson" not in current_url
 
-                        if is_on_learn_page or question_count > 0:
-                            print("  ✅ Lesson complete! (no Continue button)")
+                        # URL already left the lesson → definitely complete
+                        if is_on_learn_page and question_count > 0:
+                            print("  ✅ Lesson complete! (back on learn/practice page)")
 
                             lesson_count += 1
                             print(f"  📊 Lessons completed: {lesson_count}")
@@ -1403,7 +1403,28 @@ def main():
                             question_count = 0
                             context.storage_state(path=SESSION_FILE)
                             print("\n🆕 New practice started!")
-                        elif consecutive_no_question >= 5:
+
+                        # Still on /lesson but no Continue for 3+ tries → lesson likely done
+                        elif consecutive_no_question >= 3 and question_count > 0:
+                            print("  ✅ Lesson complete! (no Continue button for 3 checks)")
+
+                            lesson_count += 1
+                            print(f"  📊 Lessons completed: {lesson_count}")
+
+                            if MAX_LESSONS > 0 and lesson_count >= MAX_LESSONS:
+                                print(f"\n🎉 Completed {lesson_count} lessons. Done!")
+                                break
+
+                            start_practice_mode(page)
+                            in_practice_mode = True
+                            consecutive_no_question = 0
+                            wrong_count = 0
+                            MAX_WRONG_PER_LESSON = 0
+                            question_count = 0
+                            context.storage_state(path=SESSION_FILE)
+                            print("\n🆕 New practice started!")
+
+                        elif consecutive_no_question >= 5 and question_count == 0:
                             print("  ⚠ Stuck: no questions and no Continue button.")
                             try:
                                 page.screenshot(path="stuck_debug.png")
@@ -1417,20 +1438,23 @@ def main():
                 consecutive_no_question = 0
                 question_count += 1
 
-                # Check if Continue button is already visible (answer already submitted)
-                already_answered = False
-                try:
-                    for cont_text in ["Continue", "CONTINUE"]:
+                # Check if Continue button is already enabled (answer already submitted)
+                continue_ready = False
+                for cont_text in ["Continue", "CONTINUE"]:
+                    try:
                         cont_btn = page.locator(f'button:has-text("{cont_text}")').first
-                        if cont_btn.is_visible(timeout=300):
-                            print("  ⏩ Continue button already visible, clicking...")
-                            cont_btn.click(timeout=1000)
+                        if cont_btn.is_visible(timeout=300) and cont_btn.is_enabled(timeout=300):
+                            continue_ready = True
+                            print(f"  ⏩ '{cont_text}' button enabled, clicking...")
+                            try:
+                                cont_btn.click(timeout=1000)
+                            except Exception:
+                                pass
                             human_sleep(0.3, 0.6)
-                            already_answered = True
                             break
-                except Exception:
-                    pass
-                if already_answered:
+                    except Exception:
+                        continue
+                if continue_ready:
                     continue
 
                 # Handle tracing exercises — skip (cannot automate mouse drawing)
