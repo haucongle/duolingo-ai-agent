@@ -90,7 +90,7 @@ jobs:
         env:
           VI_DUO_EMAIL: ${{ secrets.VI_DUO_EMAIL }}
           VI_DUO_PASSWORD: ${{ secrets.VI_DUO_PASSWORD }}
-          DUO_JWT: ${{ secrets.DUO_JWT }}
+          VI_DUO_JWT: ${{ secrets.VI_DUO_JWT }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           HEADLESS: 'true'
           NO_AUDIO: 'true'

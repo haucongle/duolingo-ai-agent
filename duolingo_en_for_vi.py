@@ -27,7 +27,7 @@ if os.getenv("NO_AUDIO", "").lower() in ("true", "1", "yes"):
 
 EMAIL = os.getenv("VI_DUO_EMAIL")
 PASSWORD = os.getenv("VI_DUO_PASSWORD")
-DUO_JWT = os.getenv("DUO_JWT")  # Optional: pre-authenticated JWT token
+DUO_JWT = os.getenv("VI_DUO_JWT") or os.getenv("DUO_JWT")  # VI-specific JWT, fallback to shared
 
 SESSION_FILE = "vi_duo_session.json"
 
@@ -1831,12 +1831,11 @@ def skip_if_stuck(page):
     return False
 
 
-def click_start_xp_button(page):
-    """Click the 'START +XX XP' button in the lesson popup."""
+def click_start_xp_button(page, max_retries=5, wait_between=2):
+    """Click the 'START +XX XP' button in the lesson popup, waiting for it to appear."""
     import re
 
-    # Try multiple approaches to find the XP start button (Vietnamese: "BẮT ĐẦU +XX KN")
-    attempts = [
+    attempts_factory = [
         # 1. Vietnamese: "BẮT ĐẦU +XX KN"
         lambda: page.get_by_text(re.compile(r"BẮT ĐẦU\s*\+\s*\d+\s*KN", re.IGNORECASE)).first,
         lambda: page.get_by_text(re.compile(r"BẮT ĐẦU\s*\+", re.IGNORECASE)).first,
@@ -1853,17 +1852,41 @@ def click_start_xp_button(page):
         lambda: page.locator('[data-test="start-button"]').first,
     ]
 
-    for attempt in attempts:
+    for retry in range(max_retries):
+        for attempt in attempts_factory:
+            try:
+                el = attempt()
+                el.click(timeout=3000)
+                print(f"  Clicked 'START +XP' button")
+                human_sleep(0.1, 0.2)
+                return True
+            except Exception:
+                continue
+
+        if retry < max_retries - 1:
+            print(f"  ⏳ Waiting for 'START +XP' button to appear... (attempt {retry + 1}/{max_retries})")
+            page.wait_for_timeout(wait_between * 1000)
+
+    # Fallback: try clicking plain "BẮT ĐẦU" / "START" without the +XP part
+    plain_buttons = [
+        lambda: page.get_by_text("BẮT ĐẦU", exact=True).first,
+        lambda: page.get_by_text("Bắt đầu", exact=True).first,
+        lambda: page.locator('button:has-text("BẮT ĐẦU")').first,
+        lambda: page.get_by_text("START", exact=True).first,
+        lambda: page.get_by_text("Start", exact=True).first,
+        lambda: page.locator('button:has-text("START")').first,
+    ]
+    for attempt in plain_buttons:
         try:
             el = attempt()
             el.click(timeout=3000)
-            print(f"  Clicked 'START +XP' button")
+            print(f"  Clicked plain 'BẮT ĐẦU/START' button (no +XP)")
             human_sleep(0.1, 0.2)
             return True
         except Exception:
             continue
 
-    print("  ⚠ Could not find 'START +XP' button, trying keyboard Enter...")
+    print("  ⚠ Could not find 'START +XP' or 'BẮT ĐẦU' button, trying keyboard Enter...")
     try:
         page.keyboard.press("Enter")
         human_sleep(0.1, 0.2)
@@ -1943,7 +1966,7 @@ def start_lesson(page):
             loc.click(timeout=2000)
             print(f"  Clicked '{text}' on learn page")
             clicked_start = True
-            human_sleep(0.1, 0.2)
+            human_sleep(0.5, 1.0)
             break
         except Exception:
             continue
@@ -1959,7 +1982,7 @@ def start_lesson(page):
                 loc.click(timeout=1500)
                 print(f"  Clicked: {sel}")
                 clicked_start = True
-                human_sleep(0.1, 0.2)
+                human_sleep(0.5, 1.0)
                 break
             except Exception:
                 continue
@@ -1969,24 +1992,15 @@ def start_lesson(page):
         start_practice_mode(page)
         return True
 
-    # Step 2: Click "START +XX XP" button in the popup
+    # Step 2: Click "START +XX XP" / "BẮT ĐẦU +XX KN" button in the popup
     if click_start_xp_button(page):
         return True
 
-    # Step 3: Fallback - try other popup buttons
-    popup_texts = ["BẮT ĐẦU", "Bắt đầu", "START", "Start", "START LESSON",
-                   "TIẾP TỤC", "CONTINUE", "Continue", "LUYỆN TẬP", "PRACTICE"]
-    for text in popup_texts:
-        try:
-            btn = page.locator(f'button:has-text("{text}")').first
-            btn.click(timeout=1000)
-            print(f"  Started lesson via: '{text}'")
-            human_sleep(0.1, 0.2)
-            return True
-        except Exception:
-            continue
-
-    # Might already be in the lesson
+    # Could not find "+XP/KN" button — go straight to practice mode
+    print("  ⚠ Could not start lesson, falling back to practice mode...")
+    page.keyboard.press("Escape")
+    human_sleep(0.5, 1.0)
+    start_practice_mode(page)
     return True
 
 
@@ -2224,7 +2238,8 @@ def main():
         else:
             page.goto("https://www.duolingo.com/learn")
             page.wait_for_load_state("domcontentloaded")
-            page.wait_for_timeout(3000)
+            page.wait_for_load_state("load")
+            page.wait_for_timeout(4000)
 
         # Save session AFTER page loads (so localStorage/cookies are fully set)
         if not os.path.exists(SESSION_FILE):
