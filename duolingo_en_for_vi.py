@@ -1209,6 +1209,21 @@ def refine_word_bank_actions(page, result):
                     found = True
                     break
             if not found:
+                # Split compound tokens: "Let's" → "Let"+"'s", "don't" → "don"+"'t"
+                for split_char in ["'", "'"]:
+                    if split_char in word:
+                        parts = word.split(split_char, 1)
+                        p1, p2 = parts[0], split_char + parts[1]
+                        r1 = next((rw for rw in remaining if rw.lower() == p1.lower()), None)
+                        r2 = next((rw for rw in remaining if rw.lower() == p2.lower()), None) if r1 else None
+                        if r1 and r2:
+                            matched_tokens.append(r1)
+                            remaining.remove(r1)
+                            matched_tokens.append(r2)
+                            remaining.remove(r2)
+                            found = True
+                            break
+            if not found:
                 all_matched = False
                 break
         if all_matched and matched_tokens:

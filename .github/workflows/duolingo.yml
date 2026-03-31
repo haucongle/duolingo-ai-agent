@@ -2,19 +2,14 @@ name: Duolingo Practice XP Farm
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # Run 1: 00:00–03:00 UTC
-    - cron: '0 4 * * *'   # Run 2: 04:00–07:00 UTC
-    - cron: '0 8 * * *'   # Run 3: 08:00–11:00 UTC
-    - cron: '0 12 * * *'  # Run 4: 12:00–15:00 UTC
-    - cron: '0 16 * * *'  # Run 5: 16:00–19:00 UTC
-    - cron: '0 20 * * *'  # Run 6: 20:00–23:00 UTC
+    - cron: '0 6 * * *'   # 1pm–6pm Vietnam (UTC+7)
   workflow_dispatch:
 
 jobs:
   practice-farm:
     name: Practice XP Farm (EN for VI)
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 300
 
     steps:
       - uses: actions/checkout@v5

@@ -833,12 +833,28 @@ def refine_word_bank_actions(page, result):
         all_matched = True
         for word in cached_split:
             found = False
+            # Direct match
             for rw in remaining:
                 if rw.lower() == word.lower():
                     matched_tokens.append(rw)
                     remaining.remove(rw)
                     found = True
                     break
+            if not found:
+                # Split compound tokens: "Let's" → "Let"+"'s", "don't" → "don"+"'t"
+                for split_char in ["'", "'"]:
+                    if split_char in word:
+                        parts = word.split(split_char, 1)
+                        p1, p2 = parts[0], split_char + parts[1]
+                        r1 = next((rw for rw in remaining if rw.lower() == p1.lower()), None)
+                        r2 = next((rw for rw in remaining if rw.lower() == p2.lower()), None) if r1 else None
+                        if r1 and r2:
+                            matched_tokens.append(r1)
+                            remaining.remove(r1)
+                            matched_tokens.append(r2)
+                            remaining.remove(r2)
+                            found = True
+                            break
             if not found:
                 all_matched = False
                 break
@@ -1130,7 +1146,7 @@ def main():
             page.wait_for_timeout(2000)
 
             consecutive_no_question = 0
-            consecutive_feedback_skip = 0
+            consecutive_continue = 0
             question_count = 0
 
             while True:
@@ -1138,33 +1154,72 @@ def main():
                     q_start = time.time()
                     human_sleep(0.5, 0.8)
 
-                    # Quick DOM check: detect lesson completion screen before expensive vision call
-                    try:
-                        body = page.inner_text("body", timeout=1000)
-                        completion_keywords = [
-                            "LUYỆN TẬP LẠI", "XEM LẠI BÀI HỌC",
-                            "Bí mật nè", "TỔNG ĐIỂM KN", "Tổng điểm KN",
-                            "Lesson complete", "Practice complete",
-                            "Bạn đã chinh phục", "lỗi sai trong bài",
-                        ]
-                        if any(kw in body for kw in completion_keywords):
-                            print(f"\n  🎉 Lesson complete screen detected!")
-                            click_button(page, ["TIẾP TỤC", "Tiếp tục", "Continue", "CONTINUE"])
-                            human_sleep(0.3, 0.5)
-                            total_questions += question_count
-                            elapsed = time.time() - farm_start
-                            print(f"  ✅ Practice complete! ({question_count} questions)")
-                            print(f"  📊 Total: {session_count} sessions, {total_questions} questions, {elapsed:.0f}s")
-                            break
-                    except Exception:
-                        pass
-
-                    # If stuck in feedback loop, force break to new session
-                    if consecutive_feedback_skip >= 3:
-                        print(f"  ⚠ Stuck in feedback loop ({consecutive_feedback_skip}x), starting new session...")
-                        total_questions += question_count
+                    # Step 1: Check for "LUYỆN TẬP LẠI" button — only exists on completion screen
+                    lesson_done = False
+                    for done_text in ["LUYỆN TẬP LẠI", "Luyện tập lại", "PRACTICE AGAIN", "Practice again"]:
+                        try:
+                            el = page.get_by_text(done_text, exact=True).first
+                            if el.is_visible(timeout=300):
+                                print(f"\n  🎉 Lesson complete! (detected '{done_text}')")
+                                for cont_text in ["TIẾP TỤC", "Tiếp tục", "Continue", "CONTINUE"]:
+                                    try:
+                                        btn = page.get_by_text(cont_text, exact=True).first
+                                        if btn.is_visible(timeout=500):
+                                            btn.click(timeout=1000)
+                                            break
+                                    except Exception:
+                                        continue
+                                human_sleep(0.3, 0.5)
+                                total_questions += question_count
+                                elapsed = time.time() - farm_start
+                                print(f"  ✅ Practice complete! ({question_count} questions)")
+                                print(f"  📊 Total: {session_count} sessions, {total_questions} questions, {elapsed:.0f}s")
+                                lesson_done = True
+                                break
+                        except Exception:
+                            continue
+                    if lesson_done:
                         break
 
+                    # Step 2: Check if "TIẾP TỤC" button is visible (previous answer done)
+                    tiep_tuc_clicked = False
+                    for cont_text in ["TIẾP TỤC", "Tiếp tục", "Continue", "CONTINUE"]:
+                        try:
+                            # Try button first
+                            cont_btn = page.locator(f'button:has-text("{cont_text}")').first
+                            if cont_btn.is_visible(timeout=200) and cont_btn.is_enabled(timeout=200):
+                                cont_btn.click(timeout=1000)
+                                print(f"  ⏩ Clicked '{cont_text}'")
+                                human_sleep(0.2, 0.4)
+                                tiep_tuc_clicked = True
+                                consecutive_continue += 1
+                                break
+                        except Exception:
+                            continue
+                    if not tiep_tuc_clicked:
+                        # Try any clickable element (a, div, etc.)
+                        for cont_text in ["TIẾP TỤC", "Continue"]:
+                            try:
+                                el = page.get_by_text(cont_text, exact=True).first
+                                if el.is_visible(timeout=200):
+                                    el.click(timeout=1000)
+                                    print(f"  ⏩ Clicked '{cont_text}' (non-button)")
+                                    human_sleep(0.2, 0.4)
+                                    tiep_tuc_clicked = True
+                                    consecutive_continue += 1
+                                    break
+                            except Exception:
+                                continue
+                    if tiep_tuc_clicked:
+                        if consecutive_continue >= 5:
+                            print(f"  ⚠ Stuck clicking TIẾP TỤC {consecutive_continue}x, starting new session...")
+                            total_questions += question_count
+                            break
+                        continue
+
+                    consecutive_continue = 0
+
+                    # Step 3: Take screenshot → AI → get answer
                     img = page.screenshot(type="jpeg", quality=80)
                     result = analyze_screen(img)
 
@@ -1173,13 +1228,10 @@ def main():
                     answer = result.get("answer", "")
 
                     elapsed = time.time() - farm_start
-                    print(f"\n⏱ {elapsed:.0f}s | Session #{session_count} | Type: {q_type}")
-                    print(f"  Question: {question}")
-                    print(f"  Answer: {answer}")
 
                     if q_type == "no_question":
                         consecutive_no_question += 1
-                        print("  No question detected, waiting...")
+                        print(f"\n⏱ {elapsed:.0f}s | Session #{session_count} | No question detected, waiting...")
 
                         q_lower = question.lower()
                         if any(kw in q_lower for kw in ["log in", "login", "sign in"]):
@@ -1190,31 +1242,16 @@ def main():
                             consecutive_no_question = 0
                             continue
 
-                        found_continue = click_button(
-                            page,
-                            ["TIẾP TỤC", "Tiếp tục", "Continue", "CONTINUE", "Next",
-                             "BẮT ĐẦU", "Bắt đầu", "START", "Start"],
-                        )
+                        if consecutive_no_question >= 5 and question_count > 0:
+                            print(f"  ✅ Practice complete! ({question_count} questions)")
+                            total_questions += question_count
+                            elapsed = time.time() - farm_start
+                            print(f"  📊 Total: {session_count} sessions, {total_questions} questions, {elapsed:.0f}s")
+                            break
 
-                        if not found_continue:
-                            current_url = page.url
-                            not_in_lesson = "/lesson" not in current_url
-
-                            if not_in_lesson and question_count > 0:
-                                print(f"  ✅ Practice complete! ({question_count} questions)")
-                                total_questions += question_count
-                                print(f"  📊 Total: {session_count} sessions, {total_questions} questions, {elapsed:.0f}s")
-                                break
-
-                            if consecutive_no_question >= 5 and question_count > 0:
-                                print(f"  ✅ Practice complete! ({question_count} questions)")
-                                total_questions += question_count
-                                print(f"  📊 Total: {session_count} sessions, {total_questions} questions, {elapsed:.0f}s")
-                                break
-
-                            if consecutive_no_question >= 8 and question_count == 0:
-                                print("  ⚠ Stuck: no questions detected.")
-                                break
+                        if consecutive_no_question >= 8 and question_count == 0:
+                            print("  ⚠ Stuck: no questions detected.")
+                            break
 
                         human_sleep(0.1, 0.2)
                         continue
@@ -1222,30 +1259,9 @@ def main():
                     consecutive_no_question = 0
                     question_count += 1
 
-                    # Check if feedback banner is showing (leftover from previous answer)
-                    continue_ready = False
-                    try:
-                        for sel in ['[data-test*="blame-incorrect"]', '[data-test*="blame-correct"]', '[data-test="blame"]']:
-                            if page.locator(sel).first.is_visible(timeout=200):
-                                for cont_text in ["TIẾP TỤC", "Tiếp tục", "Continue", "CONTINUE"]:
-                                    try:
-                                        cont_btn = page.locator(f'button:has-text("{cont_text}")').first
-                                        if cont_btn.is_visible(timeout=300) and cont_btn.is_enabled(timeout=300):
-                                            continue_ready = True
-                                            print(f"  ⏩ Feedback visible, clicking '{cont_text}'...")
-                                            cont_btn.click(timeout=1000)
-                                            human_sleep(0.1, 0.2)
-                                            consecutive_feedback_skip += 1
-                                            break
-                                    except Exception:
-                                        continue
-                                break
-                    except Exception:
-                        pass
-                    if continue_ready:
-                        continue
-
-                    consecutive_feedback_skip = 0
+                    print(f"\n⏱ {elapsed:.0f}s | Session #{session_count} | Q{question_count} | Type: {q_type}")
+                    print(f"  Question: {question}")
+                    print(f"  Answer: {answer}")
 
                     q_text = result.get("question", "")
 
