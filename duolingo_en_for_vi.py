@@ -43,6 +43,18 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # Answer cache: maps question text -> correct answer (learned from Duolingo feedback)
 answer_cache = {}
 
+
+def normalize_cache_key(text):
+    """Normalize question text for consistent cache lookups.
+    Collapses varying underscore counts and surrounding whitespace/punctuation
+    so that 'telling ___', 'telling _______.', 'telling ______ .' all match.
+    """
+    if not text:
+        return ""
+    s = re.sub(r'_+', '___', text)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
 PROMPT = """You are an AI agent that solves Duolingo exercises automatically.
 This is an English course for Vietnamese speakers. The UI may be in Vietnamese.
 
@@ -831,7 +843,7 @@ def handle_listen_and_type(page, result):
     # Step 1: Try to get the missing word from AI answer or cache
     missing_word = None
     q_text = result.get("question", "")
-    full_cached = answer_cache.get(q_text, "")
+    full_cached = answer_cache.get(normalize_cache_key(q_text), "")
 
     if not is_dictation and sentence:
         # Try the full cached sentence first (from previous wrong answer feedback)
@@ -873,9 +885,12 @@ def handle_listen_and_type(page, result):
                         pass
 
         if not full_transcript and not missing_word:
-            print("  ⚠ Could not transcribe audio, skipping...")
-            skip_if_stuck(page)
-            return False
+            if is_dictation:
+                print("  ⚠ Could not transcribe audio, skipping...")
+                skip_if_stuck(page)
+                return False
+            else:
+                print("  ⚠ No audio — will infer missing word from context")
 
         if full_transcript:
             print(f"  Full sentence: '{full_transcript}'")
@@ -1086,7 +1101,7 @@ def refine_multiple_choice_actions(page, result):
         question = result.get("question", "")
         ai_answer = result.get("answer", "")
         q_type = result.get("type", "")
-        cached = answer_cache.get(question, "")
+        cached = answer_cache.get(normalize_cache_key(question), "")
 
         # If already a key press action, keep it (unless stories-choice which needs click)
         if not is_stories:
@@ -1166,7 +1181,7 @@ def refine_word_bank_actions(page, result):
     ai_answer = result.get("answer", "")
 
     # Check if there's a cached correct answer for this question
-    cached = answer_cache.get(question, "")
+    cached = answer_cache.get(normalize_cache_key(question), "")
 
     print(f"  📋 Word bank tokens: {available_words}")
 
@@ -1743,7 +1758,8 @@ def capture_correct_answer(page, question_text=""):
         is_generic = question_text.lower().strip() in GENERIC_TITLES
 
         if correct and question_text and not is_generic:
-            answer_cache[question_text] = correct
+            cache_key = normalize_cache_key(question_text)
+            answer_cache[cache_key] = correct
             print(f"  📝 Cached answer: '{question_text}' → '{correct}'")
 
         return correct
@@ -1926,11 +1942,86 @@ def check_no_hearts(page):
     """Check if the 'You need hearts' popup is showing. Returns True if out of hearts."""
     try:
         body_text = page.inner_text("body", timeout=1000)
-        if "You need hearts" in body_text or "need hearts to start" in body_text:
+        no_heart_phrases = [
+            "You need hearts", "need hearts to start",
+            "trái tim để bắt đầu", "cần có trái tim",
+            "Bạn cần có trái tim",
+        ]
+        if any(phrase in body_text for phrase in no_heart_phrases):
             return True
     except Exception:
         pass
     return False
+
+
+def click_plus_one_heart(page):
+    """Click '+1 trái tim' / '+1 heart' in the no-hearts popup, then confirm with the practice button."""
+    print("  ❤️‍🩹 Clicking '+1 trái tim' to earn a heart via practice...")
+    clicked = False
+
+    heart_texts = ["+1 trái tim", "+1 heart", "Luyện tập"]
+    for text in heart_texts:
+        try:
+            loc = page.get_by_text(text, exact=False).first
+            if loc.is_visible(timeout=2000):
+                loc.click(timeout=2000)
+                print(f"  Clicked '{text}' in hearts popup")
+                clicked = True
+                break
+        except Exception:
+            continue
+
+    if not clicked:
+        try:
+            loc = page.locator('text=/\\+1/').first
+            if loc.is_visible(timeout=1000):
+                loc.click(timeout=1000)
+                print("  Clicked '+1' fallback")
+                clicked = True
+        except Exception:
+            pass
+
+    if not clicked:
+        print("  ⚠ Could not find '+1 trái tim' button, falling back to practice URL")
+        start_practice_mode(page)
+        return True
+
+    human_sleep(0.5, 1.0)
+
+    # Second step: click "LUYỆN TẬP ĐỂ HỒI PHỤC TRÁI TIM" / "PRACTICE TO EARN HEARTS"
+    confirm_texts = [
+        "LUYỆN TẬP ĐỂ HỒI PHỤC TRÁI TIM",
+        "Luyện tập để hồi phục trái tim",
+        "PRACTICE TO EARN HEARTS",
+        "Practice to earn hearts",
+        "START PRACTICE", "Start practice",
+        "BẮT ĐẦU LUYỆN TẬP", "Bắt đầu luyện tập",
+    ]
+    for text in confirm_texts:
+        try:
+            loc = page.get_by_text(text, exact=False).first
+            if loc.is_visible(timeout=3000):
+                loc.click(timeout=2000)
+                print(f"  Clicked '{text}' to start practice")
+                human_sleep(0.5, 1.0)
+                return True
+        except Exception:
+            continue
+
+    # Fallback: click any prominent button on the confirmation screen
+    try:
+        btn = page.locator('button[data-test="start-button"], button[data-test="primary-button"]').first
+        if btn.is_visible(timeout=2000):
+            btn.click(timeout=2000)
+            print("  Clicked practice confirm button (selector fallback)")
+            human_sleep(0.5, 1.0)
+            return True
+    except Exception:
+        pass
+
+    print("  ⚠ Could not find practice confirm button, falling back to practice URL")
+    start_practice_mode(page)
+    return True
 
 
 def start_practice_mode(page):
@@ -1950,11 +2041,8 @@ def start_lesson(page):
 
     # Check if out of hearts
     if check_no_hearts(page):
-        print("  💔 Out of hearts! Switching to practice mode...")
-        # Close popup first
-        click_button(page, ["NO THANKS", "No thanks", "CLOSE", "Close", "✕"])
-        human_sleep(0.1, 0.2)
-        start_practice_mode(page)
+        print("  💔 Out of hearts! Earning a heart via practice...")
+        click_plus_one_heart(page)
         return True
 
     start_texts = ["BẮT ĐẦU", "Bắt đầu", "START", "Start"]
@@ -2298,12 +2386,10 @@ def main():
                         consecutive_no_question = 0
                         continue
 
-                    # Check if out of hearts → switch to practice
+                    # Check if out of hearts → click +1 heart to practice
                     if check_no_hearts(page):
-                        print("  💔 Out of hearts! Switching to practice...")
-                        click_button(page, ["NO THANKS", "No thanks", "CLOSE", "Close", "✕"])
-                        human_sleep(0.1, 0.2)
-                        start_practice_mode(page)
+                        print("  💔 Out of hearts! Earning a heart via practice...")
+                        click_plus_one_heart(page)
                         in_practice_mode = True
                         consecutive_no_question = 0
                         continue
@@ -2338,7 +2424,8 @@ def main():
                             hearts = get_hearts(page)
                             if hearts >= 0:
                                 print(f"  ❤️ Hearts: {hearts}/5")
-                            if 0 <= hearts < 5:
+                            if hearts == 0:
+                                print("  💔 No hearts left, starting practice to earn one...")
                                 start_practice_mode(page)
                                 in_practice_mode = True
                             else:
@@ -2371,7 +2458,8 @@ def main():
                             hearts = get_hearts(page)
                             if hearts >= 0:
                                 print(f"  ❤️ Hearts: {hearts}/5")
-                            if 0 <= hearts < 5:
+                            if hearts == 0:
+                                print("  💔 No hearts left, starting practice to earn one...")
                                 start_practice_mode(page)
                                 in_practice_mode = True
                             else:
@@ -2398,31 +2486,44 @@ def main():
                 consecutive_no_question = 0
                 question_count += 1
 
-                # Check if Continue button is already enabled (answer already submitted)
-                # The button may be visible but disabled/greyed out — only skip if it's enabled
+                # Check if we're on a feedback screen (answer already submitted)
+                # Only click Continue if a feedback banner is visible, not on a fresh question
                 continue_ready = False
-                for cont_text in ["TIẾP TỤC", "Tiếp tục", "Continue", "CONTINUE"]:
-                    try:
-                        cont_btn = page.locator(f'button:has-text("{cont_text}")').first
-                        if cont_btn.is_visible(timeout=300) and cont_btn.is_enabled(timeout=300):
-                            continue_ready = True
-                            print(f"  ⏩ '{cont_text}' button enabled, clicking...")
+                try:
+                    feedback_showing = False
+                    for sel in ['[data-test*="blame-incorrect"]', '[data-test*="blame-correct"]', '[data-test="blame"]']:
+                        try:
+                            if page.locator(sel).first.is_visible(timeout=200):
+                                feedback_showing = True
+                                break
+                        except Exception:
+                            continue
+                    if feedback_showing:
+                        for cont_text in ["TIẾP TỤC", "Tiếp tục", "Continue", "CONTINUE"]:
                             try:
-                                cont_btn.click(timeout=1000)
+                                cont_btn = page.locator(f'button:has-text("{cont_text}")').first
+                                if cont_btn.is_visible(timeout=300) and cont_btn.is_enabled(timeout=300):
+                                    continue_ready = True
+                                    print(f"  ⏩ Feedback visible, clicking '{cont_text}'...")
+                                    try:
+                                        cont_btn.click(timeout=1000)
+                                    except Exception:
+                                        pass
+                                    human_sleep(0.1, 0.2)
+                                    break
                             except Exception:
-                                pass
-                            human_sleep(0.1, 0.2)
-                            break
-                    except Exception:
-                        continue
+                                continue
+                except Exception:
+                    pass
                 if continue_ready:
                     continue
 
                 q_text = result.get("question", "")
 
                 # Check answer cache first — if we've seen this question before, use cached answer
-                if q_text and q_text in answer_cache:
-                    cached = answer_cache[q_text]
+                q_cache_key = normalize_cache_key(q_text) if q_text else ""
+                if q_cache_key and q_cache_key in answer_cache:
+                    cached = answer_cache[q_cache_key]
                     print(f"  💾 Found cached answer: '{cached}'")
                     # Override the AI's answer with the cached one
                     result["answer"] = cached
@@ -2455,6 +2556,16 @@ def main():
                         # Split cached answer into words and click them
                         words = cached.split()
                         result["actions"] = [{"action": "click", "target": w} for w in words]
+
+                # Skip audio-dependent exercises when no audio
+                audio_types = ("audio_matching", "audio_fill_blank", "listening")
+                if not HAS_AUDIO and q_type in audio_types:
+                    print(f"  🔇 No audio — skipping {q_type} exercise")
+                    skip_if_stuck(page)
+                    human_sleep(0.1, 0.2)
+                    click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
+                    human_sleep(0.1, 0.2)
+                    continue
 
                 # Handle audio matching exercises (Chọn cặp từ with audio)
                 if q_type == "audio_matching":

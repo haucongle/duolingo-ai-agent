@@ -1,16 +1,20 @@
-name: Duolingo Daily Practice
+name: Duolingo Practice XP Farm
 
 on:
   schedule:
-    - cron: '0 1 * * *'
+    - cron: '0 0 * * *'   # Run 1: 00:00–03:00 UTC
+    - cron: '0 4 * * *'   # Run 2: 04:00–07:00 UTC
+    - cron: '0 8 * * *'   # Run 3: 08:00–11:00 UTC
+    - cron: '0 12 * * *'  # Run 4: 12:00–15:00 UTC
+    - cron: '0 16 * * *'  # Run 5: 16:00–19:00 UTC
+    - cron: '0 20 * * *'  # Run 6: 20:00–23:00 UTC
   workflow_dispatch:
 
 jobs:
-  practice-cn:
-    if: false
-    name: Chinese for English
+  practice-farm:
+    name: Practice XP Farm (EN for VI)
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 180
 
     steps:
       - uses: actions/checkout@v5
@@ -26,102 +30,22 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
-      - name: Run CN practice rounds
-        env:
-          DUO_EMAIL: ${{ secrets.DUO_EMAIL }}
-          DUO_PASSWORD: ${{ secrets.DUO_PASSWORD }}
-          DUO_JWT: ${{ secrets.DUO_JWT }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          HEADLESS: 'true'
-          NO_AUDIO: 'true'
-        run: |
-          ROUNDS=$((RANDOM % 3 + 2))
-          echo "🎲 CN session: $ROUNDS rounds"
-          for i in $(seq 1 $ROUNDS); do
-            LESSONS=$((RANDOM % 16 + 5))
-            echo ""
-            echo "========================================="
-            echo "🔄 CN Round $i/$ROUNDS — $LESSONS lessons"
-            echo "========================================="
-            MAX_LESSONS=$LESSONS python duolingo_cn_for_en.py || true
-
-            if [ "$i" -lt "$ROUNDS" ]; then
-              SLEEP_MIN=$((RANDOM % 61 + 60))
-              echo ""
-              echo "😴 Sleeping ${SLEEP_MIN} minutes before next round..."
-              sleep $((SLEEP_MIN * 60))
-            fi
-          done
-
-      - name: Save CN artifacts
-        if: always()
-        uses: actions/upload-artifact@v5
-        with:
-          name: cn-debug
-          path: |
-            en_duo_session.json
-            login_debug.png
-            login_failed.png
-            stuck_debug.png
-            playwright-videos/
-          retention-days: 3
-          if-no-files-found: ignore
-
-  practice-vi:
-    name: English for Vietnamese
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install python-dotenv playwright openai
-          playwright install chromium
-          playwright install-deps chromium
-
-      - name: Run VI practice rounds
+      - name: Run practice farm
         env:
           VI_DUO_EMAIL: ${{ secrets.VI_DUO_EMAIL }}
           VI_DUO_PASSWORD: ${{ secrets.VI_DUO_PASSWORD }}
           VI_DUO_JWT: ${{ secrets.VI_DUO_JWT }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           HEADLESS: 'true'
-          NO_AUDIO: 'true'
-        run: |
-          ROUNDS=$((RANDOM % 3 + 2))
-          echo "🎲 VI session: $ROUNDS rounds"
-          for i in $(seq 1 $ROUNDS); do
-            LESSONS=$((RANDOM % 16 + 5))
-            echo ""
-            echo "========================================="
-            echo "🔄 VI Round $i/$ROUNDS — $LESSONS lessons"
-            echo "========================================="
-            MAX_LESSONS=$LESSONS python duolingo_en_for_vi.py || true
+        run: python duolingo_practice_farm.py
 
-            if [ "$i" -lt "$ROUNDS" ]; then
-              SLEEP_MIN=$((RANDOM % 61 + 60))
-              echo ""
-              echo "😴 Sleeping ${SLEEP_MIN} minutes before next round..."
-              sleep $((SLEEP_MIN * 60))
-            fi
-          done
-
-      - name: Save VI artifacts
+      - name: Save artifacts
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: vi-debug
+          name: practice-debug-${{ github.run_number }}
           path: |
             vi_duo_session.json
-            login_debug.png
-            login_failed.png
             stuck_debug.png
             playwright-videos/
           retention-days: 3
