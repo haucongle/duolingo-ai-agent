@@ -30,6 +30,43 @@ PRACTICE_URL = "https://www.duolingo.com/practice"
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 answer_cache = {}
+cache_fail_count = {}
+
+GENERIC_QUESTION_EXACT = {
+    'nghe và điền', 'nhập từ còn thiếu', 'đọc câu này',
+    'chọn cặp từ', 'nghe và tìm từ còn thiếu',
+    'tap what you hear', 'type the missing word',
+    'hoàn thành câu', 'complete the sentence',
+    'chọn nghĩa đúng', 'choose the correct meaning',
+    'điền vào chỗ trống', 'fill in the blank',
+    'chọn bản dịch đúng', 'choose the correct translation',
+    'chọn đáp án đúng', 'choose the correct answer',
+    'viết lại bằng tiếng anh', 'rewrite in english',
+    'write what you hear', 'nghe và viết lại',
+    'dịch câu này', 'translate this sentence',
+    'complete the sentence with the missing word',
+}
+
+GENERIC_QUESTION_SUBSTRINGS = [
+    'hoàn thành câu', 'complete the sentence',
+    'chọn nghĩa đúng', 'choose the correct meaning',
+    'điền vào chỗ trống', 'fill in the blank',
+    'type the missing word', 'nhập từ còn thiếu',
+    'write what you hear', 'tap what you hear',
+]
+
+MAX_CACHE_FAILURES = 2
+
+
+def _is_generic_question(text):
+    """Return True if the question text is a generic title that should not be cached."""
+    t = text.lower().strip()
+    if t in GENERIC_QUESTION_EXACT:
+        return True
+    for sub in GENERIC_QUESTION_SUBSTRINGS:
+        if sub in t:
+            return True
+    return False
 
 
 def normalize_cache_key(text):
@@ -869,16 +906,10 @@ def capture_correct_answer(page, question_text=""):
             for noise in ['BÁO CÁO', 'TIẾP TỤC', 'CONTINUE', 'REPORT']:
                 correct = correct.replace(noise, '').strip()
 
-        GENERIC_TITLES = [
-            'nghe và điền', 'nhập từ còn thiếu', 'đọc câu này',
-            'chọn cặp từ', 'nghe và tìm từ còn thiếu',
-            'tap what you hear', 'type the missing word',
-        ]
-        is_generic = question_text.lower().strip() in GENERIC_TITLES
-
-        if correct and question_text and not is_generic:
+        if correct and question_text and not _is_generic_question(question_text):
             cache_key = normalize_cache_key(question_text)
             answer_cache[cache_key] = correct
+            cache_fail_count.pop(cache_key, None)
             print(f"  📝 Cached: '{question_text}' → '{correct}'")
 
         return correct
@@ -905,7 +936,7 @@ def _detect_feedback_banner(page, timeout_ms=1500):
 
 
 def handle_post_answer(page, question_text=""):
-    """Returns True if feedback was detected, False otherwise."""
+    """Returns 'correct', 'incorrect', or 'no_feedback'."""
     human_sleep(0.1, 0.2)
 
     check_clicked = click_check_button(page)
@@ -925,11 +956,13 @@ def handle_post_answer(page, question_text=""):
         print(f"  ⚠ No feedback banner detected")
         click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
         human_sleep(0.15, 0.3)
-        return False
+        return "no_feedback"
 
     correct_answer = capture_correct_answer(page, question_text)
+    result_status = "correct"
     if correct_answer:
         print(f"  ❌ Incorrect! Correct: {correct_answer}")
+        result_status = "incorrect"
     else:
         is_incorrect = False
         try:
@@ -947,12 +980,13 @@ def handle_post_answer(page, question_text=""):
                 pass
         if is_incorrect:
             print(f"  ❌ Incorrect!")
+            result_status = "incorrect"
         else:
             print(f"  ✅ Correct!")
 
     click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
     human_sleep(0.15, 0.3)
-    return True
+    return result_status
 
 
 # ---------------------------------------------------------------------------
@@ -1581,31 +1615,45 @@ def main():
                         total_questions += question_count
                         break
 
-                    # Check answer cache
+                    # Check answer cache (skip if generic or already failed too many times)
+                    used_cache = False
                     q_cache_key = normalize_cache_key(q_text) if q_text else ""
                     if q_cache_key and q_cache_key in answer_cache:
-                        cached = answer_cache[q_cache_key]
-                        print(f"  💾 Found cached answer: '{cached}'")
-                        result["answer"] = cached
-                        if q_type == "typing":
-                            result["actions"] = [{"action": "type", "target": "input", "value": cached}]
-                        elif q_type in ("multiple_choice", "image_choice"):
-                            all_opts = result.get("all_options", [])
-                            cached_lower = cached.lower().strip()
-                            for idx, opt in enumerate(all_opts):
-                                if opt.lower().strip() == cached_lower:
-                                    result["actions"] = [{"action": "press", "key": str(idx + 1)}]
-                                    print(f"  💾 Mapped to option {idx + 1}")
-                                    break
-                            else:
+                        if cache_fail_count.get(q_cache_key, 0) >= MAX_CACHE_FAILURES:
+                            print(f"  💾 Cached answer evicted (failed {cache_fail_count[q_cache_key]}x): '{answer_cache[q_cache_key]}'")
+                            del answer_cache[q_cache_key]
+                            cache_fail_count.pop(q_cache_key, None)
+                        elif _is_generic_question(q_text):
+                            print(f"  💾 Skipping cache for generic question")
+                        else:
+                            cached = answer_cache[q_cache_key]
+                            print(f"  💾 Found cached answer: '{cached}'")
+                            used_cache = True
+                            if q_type == "listen_and_type":
+                                pass
+                            elif q_type == "typing":
+                                result["answer"] = cached
+                                result["actions"] = [{"action": "type", "target": "input", "value": cached}]
+                            elif q_type in ("multiple_choice", "image_choice"):
+                                result["answer"] = cached
+                                all_opts = result.get("all_options", [])
+                                cached_lower = cached.lower().strip()
                                 for idx, opt in enumerate(all_opts):
-                                    if cached_lower in opt.lower() or opt.lower() in cached_lower:
+                                    if opt.lower().strip() == cached_lower:
                                         result["actions"] = [{"action": "press", "key": str(idx + 1)}]
+                                        print(f"  💾 Mapped to option {idx + 1}")
                                         break
                                 else:
-                                    result["actions"] = [{"action": "click", "target": cached}]
-                        elif q_type == "word_bank":
-                            pass
+                                    for idx, opt in enumerate(all_opts):
+                                        if cached_lower in opt.lower() or opt.lower() in cached_lower:
+                                            result["actions"] = [{"action": "press", "key": str(idx + 1)}]
+                                            break
+                                    else:
+                                        result["actions"] = [{"action": "click", "target": cached}]
+                            elif q_type == "word_bank":
+                                result["answer"] = cached
+                            else:
+                                result["answer"] = cached
 
                     # Skip audio-only exercises (no audio in practice mode)
                     if q_type in ("audio_matching", "audio_fill_blank", "listening", "speaking"):
@@ -1621,11 +1669,13 @@ def main():
                         human_sleep(0.05, 0.15)
                         executed = handle_listen_and_type(page, result)
                         if executed:
-                            got_feedback = handle_post_answer(page, q_text)
-                            if got_feedback:
-                                consecutive_no_feedback = 0
-                            else:
+                            feedback = handle_post_answer(page, q_text)
+                            if feedback == "no_feedback":
                                 consecutive_no_feedback += 1
+                            else:
+                                consecutive_no_feedback = 0
+                                if feedback == "incorrect" and used_cache and q_cache_key:
+                                    cache_fail_count[q_cache_key] = cache_fail_count.get(q_cache_key, 0) + 1
                         else:
                             skip_if_stuck(page)
                             click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
@@ -1650,11 +1700,13 @@ def main():
                     print("  Executing actions...")
                     executed = execute_actions(page, result)
                     if executed:
-                        got_feedback = handle_post_answer(page, q_text)
-                        if got_feedback:
-                            consecutive_no_feedback = 0
-                        else:
+                        feedback = handle_post_answer(page, q_text)
+                        if feedback == "no_feedback":
                             consecutive_no_feedback += 1
+                        else:
+                            consecutive_no_feedback = 0
+                            if feedback == "incorrect" and used_cache and q_cache_key:
+                                cache_fail_count[q_cache_key] = cache_fail_count.get(q_cache_key, 0) + 1
                     else:
                         print("  No actions executed, skipping...")
                         skip_if_stuck(page)

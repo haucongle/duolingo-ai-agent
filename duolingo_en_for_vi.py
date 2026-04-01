@@ -42,6 +42,44 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Answer cache: maps question text -> correct answer (learned from Duolingo feedback)
 answer_cache = {}
+cache_fail_count = {}
+
+GENERIC_QUESTION_EXACT = {
+    'nghe và điền', 'nhập từ còn thiếu', 'đọc câu này',
+    'chọn cặp từ', 'nghe và tìm từ còn thiếu',
+    'tap what you hear', 'type the missing word', 'read this sentence',
+    'select the matching pairs', 'listen and complete',
+    'hoàn thành câu', 'complete the sentence',
+    'chọn nghĩa đúng', 'choose the correct meaning',
+    'điền vào chỗ trống', 'fill in the blank',
+    'chọn bản dịch đúng', 'choose the correct translation',
+    'chọn đáp án đúng', 'choose the correct answer',
+    'viết lại bằng tiếng anh', 'rewrite in english',
+    'write what you hear', 'nghe và viết lại',
+    'dịch câu này', 'translate this sentence',
+    'complete the sentence with the missing word',
+}
+
+GENERIC_QUESTION_SUBSTRINGS = [
+    'hoàn thành câu', 'complete the sentence',
+    'chọn nghĩa đúng', 'choose the correct meaning',
+    'điền vào chỗ trống', 'fill in the blank',
+    'type the missing word', 'nhập từ còn thiếu',
+    'write what you hear', 'tap what you hear',
+]
+
+MAX_CACHE_FAILURES = 2
+
+
+def _is_generic_question(text):
+    """Return True if the question text is a generic title that should not be cached."""
+    t = text.lower().strip()
+    if t in GENERIC_QUESTION_EXACT:
+        return True
+    for sub in GENERIC_QUESTION_SUBSTRINGS:
+        if sub in t:
+            return True
+    return False
 
 
 def normalize_cache_key(text):
@@ -1815,18 +1853,10 @@ def capture_correct_answer(page, question_text=""):
             for noise in ['BÁO CÁO', 'TIẾP TỤC', 'CONTINUE', 'REPORT']:
                 correct = correct.replace(noise, '').strip()
 
-        # Don't cache generic exercise titles — they're not unique questions
-        GENERIC_TITLES = [
-            'nghe và điền', 'nhập từ còn thiếu', 'đọc câu này',
-            'chọn cặp từ', 'nghe và tìm từ còn thiếu',
-            'tap what you hear', 'type the missing word', 'read this sentence',
-            'select the matching pairs', 'listen and complete',
-        ]
-        is_generic = question_text.lower().strip() in GENERIC_TITLES
-
-        if correct and question_text and not is_generic:
+        if correct and question_text and not _is_generic_question(question_text):
             cache_key = normalize_cache_key(question_text)
             answer_cache[cache_key] = correct
+            cache_fail_count.pop(cache_key, None)
             print(f"  📝 Cached answer: '{question_text}' → '{correct}'")
 
         return correct
@@ -1856,7 +1886,9 @@ def _detect_feedback_banner(page, timeout_ms=1500):
 
 
 def handle_post_answer(page, question_text=""):
-    """Click Check, Continue, or Next after answering."""
+    """Click Check, Continue, or Next after answering.
+    Returns 'correct', 'incorrect', or 'no_feedback'.
+    """
 
     human_sleep(0.1, 0.2)
 
@@ -1877,11 +1909,13 @@ def handle_post_answer(page, question_text=""):
         print(f"  ⚠ No feedback banner detected")
         click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
         human_sleep(0.15, 0.3)
-        return
+        return "no_feedback"
 
     correct_answer = capture_correct_answer(page, question_text)
+    result_status = "correct"
     if correct_answer:
         print(f"  ❌ Incorrect! Correct answer: {correct_answer}")
+        result_status = "incorrect"
     else:
         is_incorrect = False
         try:
@@ -1900,11 +1934,13 @@ def handle_post_answer(page, question_text=""):
                 pass
         if is_incorrect:
             print(f"  ❌ Incorrect!")
+            result_status = "incorrect"
         else:
             print(f"  ✅ Correct!")
 
     click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
     human_sleep(0.15, 0.3)
+    return result_status
 
 
 def skip_if_stuck(page):
