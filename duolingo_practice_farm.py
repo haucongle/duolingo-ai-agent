@@ -42,9 +42,11 @@ GENERIC_QUESTION_EXACT = {
     'chọn bản dịch đúng', 'choose the correct translation',
     'chọn đáp án đúng', 'choose the correct answer',
     'viết lại bằng tiếng anh', 'rewrite in english',
+    'viết lại bằng tiếng việt', 'rewrite in vietnamese',
     'write what you hear', 'nghe và viết lại',
     'dịch câu này', 'translate this sentence',
     'complete the sentence with the missing word',
+    'complete the sentence with the correct word',
 }
 
 GENERIC_QUESTION_SUBSTRINGS = [
@@ -53,6 +55,9 @@ GENERIC_QUESTION_SUBSTRINGS = [
     'điền vào chỗ trống', 'fill in the blank',
     'type the missing word', 'nhập từ còn thiếu',
     'write what you hear', 'tap what you hear',
+    'viết lại bằng tiếng', 'rewrite in ',
+    'translate the sentence', 'dịch câu',
+    'translate \'', 'translate "',
 ]
 
 MAX_CACHE_FAILURES = 2
@@ -908,9 +913,13 @@ def capture_correct_answer(page, question_text=""):
 
         if correct and question_text and not _is_generic_question(question_text):
             cache_key = normalize_cache_key(question_text)
-            answer_cache[cache_key] = correct
-            cache_fail_count.pop(cache_key, None)
-            print(f"  📝 Cached: '{question_text}' → '{correct}'")
+            existing = answer_cache.get(cache_key)
+            if existing and existing.strip().lower() == correct.strip().lower():
+                pass
+            else:
+                answer_cache[cache_key] = correct
+                cache_fail_count.pop(cache_key, None)
+                print(f"  📝 Cached: '{question_text}' → '{correct}'")
 
         return correct
     except Exception:
@@ -1663,6 +1672,20 @@ def main():
                         click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
                         human_sleep(0.1, 0.2)
                         continue
+
+                    # Reclassify: typing exercises with blanks are really fill-in-blank
+                    if q_type == "typing":
+                        q_combined = f"{question} {result.get('sentence', '')}".lower()
+                        has_blank = '___' in q_combined or '_' in q_combined
+                        has_completion_hint = any(kw in q_combined for kw in [
+                            'complete the sentence', 'hoàn thành câu',
+                            'fill in the blank', 'điền vào chỗ trống',
+                            'missing word', 'từ còn thiếu',
+                        ])
+                        if has_blank or has_completion_hint:
+                            print(f"  🔄 Reclassified typing → listen_and_type (fill-in-blank detected)")
+                            q_type = "listen_and_type"
+                            result["type"] = "listen_and_type"
 
                     # Fill-in-the-blank — infer from context/cache
                     if q_type == "listen_and_type":
