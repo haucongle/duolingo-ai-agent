@@ -132,6 +132,10 @@ def human_sleep(min_s=0.3, max_s=1.0):
     time.sleep(random.uniform(min_s, max_s))
 
 
+def normalize_quotes(text):
+    return text.replace("\u2018", "'").replace("\u2019", "'").replace("\u02BC", "'").replace("\u0060", "'")
+
+
 # ---------------------------------------------------------------------------
 # Exercise handlers
 # ---------------------------------------------------------------------------
@@ -389,6 +393,155 @@ def get_all_word_tokens(page):
         except Exception:
             pass
     return tokens
+
+
+def get_word_bank_available_tokens(page):
+    """Get only available (un-clicked) tokens from the word bank, not the answer area."""
+    tokens = []
+
+    bank_selectors = [
+        ('[data-test="word-bank"] [data-test="challenge-tap-token"]', False),
+        ('[data-test="word-bank"] button', False),
+        ('[class*="wordBank"] button', False),
+    ]
+
+    for sel, _ in bank_selectors:
+        try:
+            locs = page.locator(sel)
+            count = locs.count()
+            if count == 0:
+                continue
+            for i in range(count):
+                loc = locs.nth(i)
+                try:
+                    if not loc.is_visible(timeout=200):
+                        continue
+                    if loc.get_attribute("aria-disabled") == "true":
+                        continue
+                    if loc.get_attribute("disabled") is not None:
+                        continue
+                    full_text = loc.inner_text(timeout=200).strip()
+                    if not full_text:
+                        continue
+                    display_text, secondary = extract_display_text(full_text)
+                    tokens.append({
+                        "full_text": full_text,
+                        "display_text": display_text,
+                        "secondary": secondary,
+                        "locator": loc,
+                    })
+                except Exception:
+                    continue
+            if tokens:
+                return tokens
+        except Exception:
+            continue
+
+    fallback_selectors = [
+        '[data-test="challenge-tap-token"]',
+        'button[data-test*="tap-token"]',
+    ]
+    for sel in fallback_selectors:
+        try:
+            locs = page.locator(sel)
+            count = locs.count()
+            if count == 0:
+                continue
+            for i in range(count):
+                loc = locs.nth(i)
+                try:
+                    if not loc.is_visible(timeout=200):
+                        continue
+                    if loc.get_attribute("aria-disabled") == "true":
+                        continue
+                    if loc.get_attribute("disabled") is not None:
+                        continue
+                    full_text = loc.inner_text(timeout=200).strip()
+                    if not full_text:
+                        continue
+                    display_text, secondary = extract_display_text(full_text)
+                    tokens.append({
+                        "full_text": full_text,
+                        "display_text": display_text,
+                        "secondary": secondary,
+                        "locator": loc,
+                    })
+                except Exception:
+                    continue
+            if tokens:
+                return tokens
+        except Exception:
+            continue
+
+    return tokens
+
+
+def execute_word_bank_sequence(page, word_order):
+    """Click word bank tokens in order, pre-collecting tokens to handle duplicates."""
+    tokens = get_word_bank_available_tokens(page)
+    if not tokens:
+        print("  ⚠ No word bank tokens found")
+        return False
+
+    token_map = {}
+    for token in tokens:
+        key = token["display_text"]
+        token_map.setdefault(key, []).append(token)
+
+    token_map_lower = {}
+    for token in tokens:
+        key = token["display_text"].lower()
+        token_map_lower.setdefault(key, []).append(token)
+
+    for i, word in enumerate(word_order):
+        if i > 0:
+            time.sleep(random.uniform(0.12, 0.25))
+
+        clicked = False
+
+        if word in token_map and token_map[word]:
+            token = token_map[word].pop(0)
+            lower_key = word.lower()
+            if lower_key in token_map_lower:
+                token_map_lower[lower_key] = [t for t in token_map_lower[lower_key] if t is not token]
+            try:
+                print(f"  [{i+1}] Clicking: '{word}'")
+                token["locator"].click(timeout=1000)
+                clicked = True
+            except Exception as e:
+                print(f"  ⚠ Click failed for '{word}': {e}")
+
+        if not clicked:
+            lower_key = word.lower()
+            if lower_key in token_map_lower and token_map_lower[lower_key]:
+                token = token_map_lower[lower_key].pop(0)
+                for key in token_map:
+                    token_map[key] = [t for t in token_map[key] if t is not token]
+                try:
+                    print(f"  [{i+1}] Clicking: '{token['display_text']}' (for '{word}')")
+                    token["locator"].click(timeout=1000)
+                    clicked = True
+                except Exception as e:
+                    print(f"  ⚠ Click failed for '{word}': {e}")
+
+        if not clicked:
+            norm_word = normalize_quotes(word)
+            for key in list(token_map.keys()):
+                if token_map[key] and (norm_word in normalize_quotes(key) or normalize_quotes(key) in norm_word):
+                    token = token_map[key].pop(0)
+                    try:
+                        print(f"  [{i+1}] Clicking: '{token['display_text']}' (partial for '{word}')")
+                        token["locator"].click(timeout=1000)
+                        clicked = True
+                        break
+                    except Exception:
+                        pass
+
+        if not clicked:
+            print(f"  ⚠ Could not find token for: '{word}'")
+            click_word_token(page, word)
+
+    return True
 
 
 def click_word_token(page, text):
@@ -807,8 +960,46 @@ def refine_multiple_choice_actions(page, result):
         print(f"  ⚠ MC refinement failed: {e}")
 
 
+def _strip_punctuation(text):
+    """Strip trailing/leading punctuation and commas from cached answers for word bank matching."""
+    words = text.split()
+    cleaned = []
+    for w in words:
+        w = w.strip(".,!?;:")
+        if w:
+            cleaned.append(w)
+    return " ".join(cleaned)
+
+
+def _try_split_contraction(word, remaining):
+    """Try splitting a contraction into parts that match word bank tokens.
+    e.g. "we're" → "we" + "'re", "don't" → "don" + "'t"
+    Returns (matched_tokens, updated_remaining) or None."""
+    norm = normalize_quotes(word)
+    if "'" not in norm:
+        return None
+    parts = norm.split("'", 1)
+    p1, p2_suffix = parts[0], "'" + parts[1]
+
+    remaining_norm = [(rw, normalize_quotes(rw)) for rw in remaining]
+
+    r1 = next((rw for rw, rn in remaining_norm if rn.lower() == p1.lower()), None)
+    if not r1:
+        return None
+    r2 = next((rw for rw, rn in remaining_norm if rn.lower() == p2_suffix.lower() and rw != r1), None)
+    if not r2:
+        return None
+
+    new_remaining = list(remaining)
+    new_remaining.remove(r1)
+    new_remaining.remove(r2)
+    return ([r1, r2], new_remaining)
+
+
 def refine_word_bank_actions(page, result):
-    tokens = get_all_word_tokens(page)
+    tokens = get_word_bank_available_tokens(page)
+    if not tokens:
+        tokens = get_all_word_tokens(page)
     if not tokens:
         return
 
@@ -820,41 +1011,32 @@ def refine_word_bank_actions(page, result):
     print(f"  📋 Word bank tokens: {available_words}")
 
     if cached:
-        cached_words = cached.rstrip('.').strip()
+        cached_clean = _strip_punctuation(cached)
         available_lower = [w.lower() for w in available_words]
-        if cached_words.lower() in available_lower:
-            idx = available_lower.index(cached_words.lower())
+        if cached_clean.lower() in available_lower:
+            idx = available_lower.index(cached_clean.lower())
             result["actions"] = [{"action": "click", "target": available_words[idx]}]
             print(f"  ✅ Cached answer matches token: '{available_words[idx]}'")
             return
-        cached_split = cached_words.split()
+
+        cached_split = cached_clean.split()
         matched_tokens = []
         remaining = list(available_words)
         all_matched = True
         for word in cached_split:
             found = False
-            # Direct match
             for rw in remaining:
-                if rw.lower() == word.lower():
+                if rw.lower() == word.lower() or normalize_quotes(rw).lower() == normalize_quotes(word).lower():
                     matched_tokens.append(rw)
                     remaining.remove(rw)
                     found = True
                     break
             if not found:
-                # Split compound tokens: "Let's" → "Let"+"'s", "don't" → "don"+"'t"
-                for split_char in ["'", "'"]:
-                    if split_char in word:
-                        parts = word.split(split_char, 1)
-                        p1, p2 = parts[0], split_char + parts[1]
-                        r1 = next((rw for rw in remaining if rw.lower() == p1.lower()), None)
-                        r2 = next((rw for rw in remaining if rw.lower() == p2.lower()), None) if r1 else None
-                        if r1 and r2:
-                            matched_tokens.append(r1)
-                            remaining.remove(r1)
-                            matched_tokens.append(r2)
-                            remaining.remove(r2)
-                            found = True
-                            break
+                split_result = _try_split_contraction(word, remaining)
+                if split_result:
+                    parts, remaining = split_result
+                    matched_tokens.extend(parts)
+                    found = True
             if not found:
                 all_matched = False
                 break
@@ -877,7 +1059,8 @@ def refine_word_bank_actions(page, result):
         prompt_parts.append(
             '\nArrange the words in correct order. Not all words need to be used.\n'
             'Reply with ONLY the words separated by " | ".\n'
-            'Example: Can | we | check | out'
+            'IMPORTANT: Use EXACTLY the words from the available list, including punctuation tokens like \'re, \'t, \'s, \'ll.\n'
+            'Example: If | we | \'re | on | the | first | floor'
         )
 
         r = client.responses.create(
@@ -893,11 +1076,18 @@ def refine_word_bank_actions(page, result):
                 valid_ordered.append(word)
                 remaining.remove(word)
                 continue
+            matched = False
             for rw in remaining:
-                if rw.lower() == word.lower():
+                if rw.lower() == word.lower() or normalize_quotes(rw).lower() == normalize_quotes(word).lower():
                     valid_ordered.append(rw)
                     remaining.remove(rw)
+                    matched = True
                     break
+            if not matched:
+                split_result = _try_split_contraction(word, remaining)
+                if split_result:
+                    parts, remaining = split_result
+                    valid_ordered.extend(parts)
 
         if valid_ordered:
             result["actions"] = [{"action": "click", "target": w} for w in valid_ordered]
@@ -913,6 +1103,13 @@ def execute_actions(page, result):
         return False
 
     q_type = result.get("type", "")
+
+    if q_type == "word_bank":
+        word_order = [act.get("target", "") for act in actions
+                      if act.get("action") == "click" and act.get("target")]
+        if word_order:
+            return execute_word_bank_sequence(page, word_order)
+
     is_matching = q_type in ("matching", "tap_pairs")
 
     for i, act in enumerate(actions):
@@ -1289,8 +1486,7 @@ def main():
                                 else:
                                     result["actions"] = [{"action": "click", "target": cached}]
                         elif q_type == "word_bank":
-                            words = cached.split()
-                            result["actions"] = [{"action": "click", "target": w} for w in words]
+                            pass
 
                     # Skip audio-only exercises (no audio in practice mode)
                     if q_type in ("audio_matching", "audio_fill_blank", "listening", "speaking"):
