@@ -1346,18 +1346,27 @@ def extract_display_text(text):
     return text, ""
 
 
+UI_BUTTON_TEXTS = {"check", "skip", "continue", "can't listen now",
+                   "use keyboard", "start", "guidebook", "next",
+                   "kiểm tra", "bỏ qua", "tiếp tục", "luyện tập lại",
+                   "practice again"}
+
+
+def _is_ui_button(text):
+    """Return True if text looks like a UI button rather than a word bank token."""
+    return text.lower() in UI_BUTTON_TEXTS or len(text) > 30
+
+
 def get_all_word_tokens(page):
     """Get all visible word bank tokens with their text content and elements.
     Returns list of dicts with full_text, display_text, secondary, locator.
     """
     tokens = []
-    # Duolingo word bank tokens - try many selectors
     token_selectors = [
         '[data-test="challenge-tap-token"]',
         '[data-test="word-bank"] button',
         '[data-test="challenge-tap-token-text"]',
         'button[data-test*="tap-token"]',
-        # Broader fallbacks for listening exercises
         '[class*="WordBank"] button',
         '[class*="wordBank"] button',
         '[class*="word-bank"] button',
@@ -1376,7 +1385,7 @@ def get_all_word_tokens(page):
                     if not loc.is_visible(timeout=200):
                         continue
                     full_text = loc.inner_text(timeout=200).strip()
-                    if not full_text:
+                    if not full_text or _is_ui_button(full_text):
                         continue
                     display_text, secondary = extract_display_text(full_text)
 
@@ -1390,12 +1399,10 @@ def get_all_word_tokens(page):
                     continue
 
             if tokens:
-                # print(f"    Found {len(tokens)} tokens via '{sel}': {[t['display_text'] for t in tokens]}")
                 return tokens
         except Exception:
             continue
 
-    # Last resort: find ALL small buttons in the middle/bottom area of the page
     if not tokens:
         try:
             all_buttons = page.locator("button")
@@ -1406,11 +1413,7 @@ def get_all_word_tokens(page):
                     if not btn.is_visible(timeout=100):
                         continue
                     text = btn.inner_text(timeout=100).strip()
-                    # Filter: skip known UI buttons, keep short text (word tokens)
-                    skip_texts = {"check", "skip", "continue", "can't listen now",
-                                  "use keyboard", "start", "guidebook",
-                                  "kiểm tra", "bỏ qua", "tiếp tục"}
-                    if not text or text.lower() in skip_texts or len(text) > 20:
+                    if not text or _is_ui_button(text):
                         continue
                     display_text, secondary = extract_display_text(text)
                     tokens.append({
@@ -1685,6 +1688,55 @@ def click_button(page, texts):
     return False
 
 
+def click_check_button(page):
+    """Click the Check/Submit button specifically, avoiding word bank token buttons."""
+    for sel in ['[data-test="player-next"] button', 'button[data-test="player-next"]']:
+        try:
+            btn = page.locator(sel).first
+            if btn.is_visible(timeout=300):
+                btn.click(timeout=1000)
+                return True
+        except Exception:
+            continue
+
+    for check_text in ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"]:
+        try:
+            buttons = page.locator("button")
+            count = buttons.count()
+            for i in range(count):
+                btn = buttons.nth(i)
+                try:
+                    if not btn.is_visible(timeout=100):
+                        continue
+                    if btn.get_attribute("data-test") and "tap-token" in (btn.get_attribute("data-test") or ""):
+                        continue
+                    btn_text = btn.inner_text(timeout=100).strip()
+                    if btn_text == check_text:
+                        btn.click(timeout=1000)
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    for text in ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"]:
+        try:
+            loc = page.locator(f'button:has-text("{text}"):not([data-test*="tap-token"])')
+            if loc.first.is_visible(timeout=300):
+                loc.first.click(timeout=1000)
+                return True
+        except Exception:
+            continue
+
+    try:
+        page.keyboard.press("Enter")
+        return True
+    except Exception:
+        pass
+
+    return False
+
+
 def capture_correct_answer(page, question_text=""):
     """After clicking Check, capture the correct answer from Duolingo's feedback banner.
 
@@ -1785,30 +1837,48 @@ def capture_correct_answer(page, question_text=""):
     return None
 
 
+def _detect_feedback_banner(page, timeout_ms=1500):
+    """Check whether a feedback banner (correct/incorrect) is visible."""
+    banner_selectors = [
+        '[data-test*="blame-incorrect"]',
+        '[data-test*="blame-correct"]',
+        '[data-test="blame"]',
+        '[data-test="challenge-judge-text"]',
+        'div[class*="blame"]',
+    ]
+    for sel in banner_selectors:
+        try:
+            if page.locator(sel).first.is_visible(timeout=timeout_ms):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def handle_post_answer(page, question_text=""):
     """Click Check, Continue, or Next after answering."""
 
     human_sleep(0.1, 0.2)
 
-    click_button(page, ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"])
-    human_sleep(0.15, 0.3)
+    check_clicked = click_check_button(page)
+    human_sleep(0.2, 0.4)
 
-    # Verify a feedback banner actually appeared (correct or incorrect)
-    banner_visible = False
-    try:
-        for sel in ['[data-test*="blame-incorrect"]', '[data-test*="blame-correct"]', '[data-test="blame"]']:
-            el = page.locator(sel).first
-            if el.is_visible(timeout=800):
-                banner_visible = True
-                break
-    except Exception:
-        pass
+    banner_visible = _detect_feedback_banner(page, timeout_ms=1500)
+
+    if not banner_visible and not check_clicked:
+        try:
+            page.keyboard.press("Enter")
+            human_sleep(0.3, 0.5)
+            banner_visible = _detect_feedback_banner(page, timeout_ms=2000)
+        except Exception:
+            pass
 
     if not banner_visible:
-        print(f"  ⚠ No feedback banner detected (Check button may not have been clicked)")
+        print(f"  ⚠ No feedback banner detected")
+        click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
+        human_sleep(0.15, 0.3)
         return
 
-    # Capture correct answer from feedback (if wrong) and log result
     correct_answer = capture_correct_answer(page, question_text)
     if correct_answer:
         print(f"  ❌ Incorrect! Correct answer: {correct_answer}")
@@ -1833,7 +1903,6 @@ def handle_post_answer(page, question_text=""):
         else:
             print(f"  ✅ Correct!")
 
-    # Click CONTINUE / TIẾP TỤC button (appears after check)
     click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
     human_sleep(0.15, 0.3)
 

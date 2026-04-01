@@ -329,6 +329,17 @@ def extract_display_text(text):
     return (lines[0], "") if lines else (text, "")
 
 
+UI_BUTTON_TEXTS = {"check", "skip", "continue", "can't listen now",
+                   "use keyboard", "start", "guidebook", "next",
+                   "kiểm tra", "bỏ qua", "tiếp tục", "luyện tập lại",
+                   "practice again"}
+
+
+def _is_ui_button(text):
+    """Return True if text looks like a UI button rather than a word bank token."""
+    return text.lower() in UI_BUTTON_TEXTS or len(text) > 30
+
+
 def get_all_word_tokens(page):
     tokens = []
     token_selectors = [
@@ -350,7 +361,7 @@ def get_all_word_tokens(page):
                     if not loc.is_visible(timeout=200):
                         continue
                     full_text = loc.inner_text(timeout=200).strip()
-                    if not full_text:
+                    if not full_text or _is_ui_button(full_text):
                         continue
                     display_text, secondary = extract_display_text(full_text)
                     tokens.append({
@@ -376,10 +387,7 @@ def get_all_word_tokens(page):
                     if not btn.is_visible(timeout=100):
                         continue
                     text = btn.inner_text(timeout=100).strip()
-                    skip_texts = {"check", "skip", "continue", "can't listen now",
-                                  "use keyboard", "start", "guidebook",
-                                  "kiểm tra", "bỏ qua", "tiếp tục"}
-                    if not text or text.lower() in skip_texts or len(text) > 20:
+                    if not text or _is_ui_button(text):
                         continue
                     display_text, secondary = extract_display_text(text)
                     tokens.append({
@@ -421,7 +429,7 @@ def get_word_bank_available_tokens(page):
                     if loc.get_attribute("disabled") is not None:
                         continue
                     full_text = loc.inner_text(timeout=200).strip()
-                    if not full_text:
+                    if not full_text or _is_ui_button(full_text):
                         continue
                     display_text, secondary = extract_display_text(full_text)
                     tokens.append({
@@ -457,7 +465,7 @@ def get_word_bank_available_tokens(page):
                     if loc.get_attribute("disabled") is not None:
                         continue
                     full_text = loc.inner_text(timeout=200).strip()
-                    if not full_text:
+                    if not full_text or _is_ui_button(full_text):
                         continue
                     display_text, secondary = extract_display_text(full_text)
                     tokens.append({
@@ -736,6 +744,60 @@ def click_button(page, texts):
     return False
 
 
+def click_check_button(page):
+    """Click the Check/Submit button specifically, avoiding word bank token buttons."""
+    # Strategy 1: Duolingo's player-next button (most specific)
+    for sel in ['[data-test="player-next"] button', 'button[data-test="player-next"]']:
+        try:
+            btn = page.locator(sel).first
+            if btn.is_visible(timeout=300):
+                btn.click(timeout=1000)
+                return True
+        except Exception:
+            continue
+
+    # Strategy 2: Find a button whose trimmed text exactly matches "Check" variants,
+    # excluding word bank tap-token buttons
+    for check_text in ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"]:
+        try:
+            buttons = page.locator("button")
+            count = buttons.count()
+            for i in range(count):
+                btn = buttons.nth(i)
+                try:
+                    if not btn.is_visible(timeout=100):
+                        continue
+                    if btn.get_attribute("data-test") and "tap-token" in (btn.get_attribute("data-test") or ""):
+                        continue
+                    btn_text = btn.inner_text(timeout=100).strip()
+                    if btn_text == check_text:
+                        btn.click(timeout=1000)
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    # Strategy 3: Fallback to has-text (but exclude tap-token elements)
+    for text in ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"]:
+        try:
+            loc = page.locator(f'button:has-text("{text}"):not([data-test*="tap-token"])')
+            if loc.first.is_visible(timeout=300):
+                loc.first.click(timeout=1000)
+                return True
+        except Exception:
+            continue
+
+    # Strategy 4: Press Enter as last resort (submits the answer in Duolingo)
+    try:
+        page.keyboard.press("Enter")
+        return True
+    except Exception:
+        pass
+
+    return False
+
+
 def skip_if_stuck(page):
     skip_texts = [
         "HIỆN KHÔNG NGHE ĐƯỢC", "Hiện không nghe được",
@@ -824,23 +886,46 @@ def capture_correct_answer(page, question_text=""):
         return None
 
 
-def handle_post_answer(page, question_text=""):
-    human_sleep(0.1, 0.2)
-    click_button(page, ["Check", "KIỂM TRA", "CHECK", "Kiểm tra"])
-    human_sleep(0.15, 0.3)
+def _detect_feedback_banner(page, timeout_ms=1500):
+    """Check whether a feedback banner (correct/incorrect) is visible."""
+    banner_selectors = [
+        '[data-test*="blame-incorrect"]',
+        '[data-test*="blame-correct"]',
+        '[data-test="blame"]',
+        '[data-test="challenge-judge-text"]',
+        'div[class*="blame"]',
+    ]
+    for sel in banner_selectors:
+        try:
+            if page.locator(sel).first.is_visible(timeout=timeout_ms):
+                return True
+        except Exception:
+            continue
+    return False
 
-    banner_visible = False
-    try:
-        for sel in ['[data-test*="blame-incorrect"]', '[data-test*="blame-correct"]', '[data-test="blame"]']:
-            if page.locator(sel).first.is_visible(timeout=800):
-                banner_visible = True
-                break
-    except Exception:
-        pass
+
+def handle_post_answer(page, question_text=""):
+    """Returns True if feedback was detected, False otherwise."""
+    human_sleep(0.1, 0.2)
+
+    check_clicked = click_check_button(page)
+    human_sleep(0.2, 0.4)
+
+    banner_visible = _detect_feedback_banner(page, timeout_ms=1500)
+
+    if not banner_visible and not check_clicked:
+        try:
+            page.keyboard.press("Enter")
+            human_sleep(0.3, 0.5)
+            banner_visible = _detect_feedback_banner(page, timeout_ms=2000)
+        except Exception:
+            pass
 
     if not banner_visible:
         print(f"  ⚠ No feedback banner detected")
-        return
+        click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
+        human_sleep(0.15, 0.3)
+        return False
 
     correct_answer = capture_correct_answer(page, question_text)
     if correct_answer:
@@ -867,6 +952,7 @@ def handle_post_answer(page, question_text=""):
 
     click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
     human_sleep(0.15, 0.3)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1345,6 +1431,12 @@ def main():
             consecutive_no_question = 0
             consecutive_continue = 0
             question_count = 0
+            last_question_text = ""
+            consecutive_same_question = 0
+            consecutive_no_feedback = 0
+
+            MAX_SAME_QUESTION = 3
+            MAX_NO_FEEDBACK = 8
 
             while True:
                 try:
@@ -1462,6 +1554,33 @@ def main():
 
                     q_text = result.get("question", "")
 
+                    # --- Repeated-question detection ---
+                    q_normalized = normalize_cache_key(q_text)
+                    if q_normalized and q_normalized == normalize_cache_key(last_question_text):
+                        consecutive_same_question += 1
+                    else:
+                        consecutive_same_question = 0
+                    last_question_text = q_text
+
+                    if consecutive_same_question >= MAX_SAME_QUESTION:
+                        print(f"  🔁 Same question repeated {consecutive_same_question + 1}x — stuck loop detected")
+                        skip_if_stuck(page)
+                        human_sleep(0.2, 0.4)
+                        click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
+                        human_sleep(0.2, 0.4)
+                        if consecutive_same_question >= MAX_SAME_QUESTION + 2:
+                            print(f"  🔄 Restarting lesson after {consecutive_same_question + 1} repeats")
+                            total_questions += question_count
+                            break
+                        q_elapsed = time.time() - q_start
+                        print(f"  ⏱ Question took {q_elapsed:.1f}s")
+                        continue
+
+                    if consecutive_no_feedback >= MAX_NO_FEEDBACK:
+                        print(f"  🔄 No feedback detected for {consecutive_no_feedback} consecutive questions — restarting lesson")
+                        total_questions += question_count
+                        break
+
                     # Check answer cache
                     q_cache_key = normalize_cache_key(q_text) if q_text else ""
                     if q_cache_key and q_cache_key in answer_cache:
@@ -1502,7 +1621,11 @@ def main():
                         human_sleep(0.05, 0.15)
                         executed = handle_listen_and_type(page, result)
                         if executed:
-                            handle_post_answer(page, q_text)
+                            got_feedback = handle_post_answer(page, q_text)
+                            if got_feedback:
+                                consecutive_no_feedback = 0
+                            else:
+                                consecutive_no_feedback += 1
                         else:
                             skip_if_stuck(page)
                             click_button(page, ["Continue", "CONTINUE", "TIẾP TỤC", "Tiếp tục"])
@@ -1527,7 +1650,11 @@ def main():
                     print("  Executing actions...")
                     executed = execute_actions(page, result)
                     if executed:
-                        handle_post_answer(page, q_text)
+                        got_feedback = handle_post_answer(page, q_text)
+                        if got_feedback:
+                            consecutive_no_feedback = 0
+                        else:
+                            consecutive_no_feedback += 1
                     else:
                         print("  No actions executed, skipping...")
                         skip_if_stuck(page)
