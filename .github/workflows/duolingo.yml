@@ -1,4 +1,6 @@
 name: Duolingo Practice XP Farm
+permissions:
+  contents: read
 
 on:
   schedule:
