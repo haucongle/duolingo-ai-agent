@@ -39,13 +39,20 @@ MAX_LESSONS = int(os.getenv("MAX_LESSONS", "0"))
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-PROMPT = """You are an AI agent that solves Duolingo exercises automatically.
+PROMPT = """You are an expert AI agent that solves Duolingo exercises automatically with perfect accuracy.
+This is a Chinese course for English speakers. Translations go English → Chinese or Chinese → English.
 
-Look at this Duolingo screenshot and determine:
-1. The type of exercise
-2. The correct answer
-3. The exact action(s) needed to answer
-4. ALL available options (for deliberate wrong answers)
+Analyze this Duolingo screenshot carefully and determine:
+1. The type of exercise (be precise — see type definitions below)
+2. The COMPLETE question text (extract every word/character visible on screen)
+3. The correct answer (grammatically perfect, with proper punctuation)
+4. The exact action(s) needed to answer
+5. ALL available options (for deliberate wrong answers)
+
+CRITICAL: For "question" field, you MUST extract the COMPLETE visible text of the question/sentence being asked.
+Do NOT summarize or paraphrase — copy the exact text shown on screen character by character.
+For word_bank exercises, this is the sentence being translated (Chinese or English).
+For typing exercises, this is the sentence to translate.
 
 Respond ONLY with valid JSON (no markdown, no explanation) using this format:
 
@@ -301,21 +308,30 @@ def handle_listening(page, result):
 
     words_to_click = None
     try:
+        system_msg = (
+            'You are an expert Duolingo solver for a Chinese course for English speakers. '
+            'Arrange word bank tokens to match the spoken sentence. '
+            'Output ONLY words separated by " | ".'
+        )
+
         r = client.responses.create(
-            model="gpt-4o-mini",
-            input=[{
-                "role": "user",
-                "content": (
-                    f'A Duolingo listening exercise (Chinese for English speakers). '
-                    f'The spoken sentence is:\n"{transcript}"\n\n'
-                    f'Available words in the word bank (ONLY use these exact words): {available_words}\n\n'
-                    f'Select and arrange words from the bank to form the sentence you heard.\n'
-                    f'Chinese characters may have pinyin variants in the bank.\n'
-                    f'Numbers in speech may appear as words (e.g. "12" → "twelve").\n'
-                    f'Not all words need to be used. Use each word at most once.\n'
+            model="gpt-5.4",
+            input=[
+                {"role": "developer", "content": system_msg},
+                {"role": "user", "content": (
+                    f'TASK: Arrange word bank tokens to reproduce the spoken sentence.\n\n'
+                    f'SPOKEN SENTENCE (from Whisper transcription): "{transcript}"\n\n'
+                    f'AVAILABLE WORD BANK TOKENS (ONLY use these exact strings): {available_words}\n'
+                    f'Total tokens: {len(available_words)} (some are distractors)\n\n'
+                    f'RULES:\n'
+                    f'- Every token you use must EXACTLY match one item in the list.\n'
+                    f'- Chinese characters (汉字) may have pinyin annotations as separate tokens.\n'
+                    f'- Use 汉字 tokens, not pinyin, when both are available.\n'
+                    f'- Numbers in speech may appear as words (e.g. "12" → "twelve").\n'
+                    f'- Not all tokens need to be used. Ignore distractors.\n\n'
                     f'Reply with ONLY the words separated by " | " (pipe), nothing else.'
-                ),
-            }],
+                )},
+            ],
         )
         ordered = [w.strip() for w in r.output_text.strip().split("|") if w.strip()]
 
@@ -397,8 +413,16 @@ def analyze_screen(img):
     b64 = base64.b64encode(img).decode()
 
     r = client.responses.create(
-        model="gpt-4o",
+        model="gpt-5.4",
         input=[
+            {
+                "role": "developer",
+                "content": (
+                    "You are an expert Duolingo exercise solver with perfect accuracy. "
+                    "Analyze screenshots precisely. Extract ALL text exactly as shown — "
+                    "never summarize or paraphrase. Return valid JSON only."
+                ),
+            },
             {
                 "role": "user",
                 "content": [
@@ -495,33 +519,45 @@ def refine_word_bank_actions(page, result):
 
     print(f"  🔄 Arranging words using actual word bank...")
     try:
+        system_msg = (
+            'You are an expert Duolingo solver for a Chinese course for English speakers. '
+            'Your task is to arrange word bank tokens into the correct sentence (Chinese or English '
+            'depending on the exercise direction). '
+            'You must ONLY output words separated by " | " — nothing else.'
+        )
+
         prompt_parts = [
-            'A Duolingo word bank exercise. You must click words from the word bank IN THE CORRECT ORDER '
-            'to form a sentence or fill in blanks.',
-            f'\nQuestion/sentence shown on screen: {question}',
+            'TASK: Arrange word bank tokens to form the correct sentence.',
+            f'\nQUESTION/SENTENCE ON SCREEN: {question}',
         ]
         if ai_answer:
-            prompt_parts.append(f'AI suggested answer: {ai_answer}')
+            prompt_parts.append(f'\nAI SUGGESTED ANSWER: {ai_answer}')
         prompt_parts.append(
-            f'\nAvailable words in the word bank (you can ONLY use these exact words): {available_words}'
+            f'\nAVAILABLE WORD BANK TOKENS (you can ONLY use these exact strings): {available_words}'
         )
         prompt_parts.append(
-            '\nArrange the words in the correct order. Not all words need to be used. '
-            'Use each word at most once.\n'
-            'CRITICAL RULES:\n'
-            '- The order matters — each word fills the next blank in the sentence.\n'
-            '- Words may be SPLIT across multiple tokens. For example, "o\'clock" might be two separate '
-            'tokens: "o" and "\'clock". You MUST include ALL parts.\n'
-            '- Chinese characters with pinyin may be separate tokens.\n'
-            '- Compare your answer with the available tokens — every token you use must EXACTLY match '
-            'one item in the available list.\n'
-            'Reply with ONLY the words separated by " | " (pipe), nothing else.\n'
-            'Example: word1 | word2 | word3'
+            f'Total tokens in bank: {len(available_words)} (some are distractors — do NOT use all of them)'
+        )
+        prompt_parts.append(
+            '\nCRITICAL RULES:\n'
+            '1. EVERY token you output must EXACTLY match one item in the available list.\n'
+            '2. The answer must be a complete, grammatically correct sentence.\n'
+            '3. For English answers: include ALL necessary words — articles, prepositions, pronouns, '
+            'auxiliary verbs. Contractions may be SPLIT: "don\'t" → "don" + "\'t".\n'
+            '4. For Chinese answers: use the Chinese characters (汉字), NOT pinyin. '
+            'Characters with pinyin annotations may appear as separate tokens.\n'
+            '5. Punctuation like "." "," "?" may be separate tokens — include them if present in the bank.\n'
+            '6. Distractor words exist in the bank — ignore words that do not belong in the sentence.\n'
+            '\nReply with ONLY the words separated by " | " (pipe), nothing else.\n'
+            'Example: I | would | like | some | rice | .'
         )
 
         r = client.responses.create(
-            model="gpt-4o-mini",
-            input=[{"role": "user", "content": "\n".join(prompt_parts)}],
+            model="gpt-5.4",
+            input=[
+                {"role": "developer", "content": system_msg},
+                {"role": "user", "content": "\n".join(prompt_parts)},
+            ],
         )
         ordered = [w.strip() for w in r.output_text.strip().split("|") if w.strip()]
 

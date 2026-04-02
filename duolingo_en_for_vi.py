@@ -98,14 +98,21 @@ def normalize_cache_key(text):
     s = re.sub(r'\s+', ' ', s).strip()
     return s
 
-PROMPT = """You are an AI agent that solves Duolingo exercises automatically.
-This is an English course for Vietnamese speakers. The UI may be in Vietnamese.
+PROMPT = """You are an expert AI agent that solves Duolingo exercises automatically with perfect accuracy.
+This is an English course for Vietnamese speakers. The UI is in Vietnamese.
+Translations go Vietnamese → English or English → Vietnamese depending on the exercise.
 
-Look at this Duolingo screenshot and determine:
-1. The type of exercise
-2. The correct answer
-3. The exact action(s) needed to answer
-4. ALL available options (for deliberate wrong answers)
+Analyze this Duolingo screenshot carefully and determine:
+1. The type of exercise (be precise — see type definitions below)
+2. The COMPLETE question text (extract every word visible on screen)
+3. The correct answer (grammatically perfect, with proper punctuation)
+4. The exact action(s) needed to answer
+5. ALL available options (for deliberate wrong answers)
+
+CRITICAL: For "question" field, you MUST extract the COMPLETE visible text of the question/sentence being asked.
+Do NOT summarize or paraphrase — copy the exact text shown on screen character by character.
+For word_bank exercises, this is the Vietnamese sentence being translated.
+For typing exercises, this is the sentence to translate.
 
 Respond ONLY with valid JSON (no markdown, no explanation) using this format:
 
@@ -419,20 +426,30 @@ def handle_listening(page, result):
     # Use GPT to arrange word bank tokens to match the transcript
     words_to_click = None
     try:
+        system_msg = (
+            'You are an expert Duolingo solver. Arrange word bank tokens to match the spoken sentence. '
+            'Output ONLY words separated by " | ".'
+        )
+
         r = client.responses.create(
-            model="gpt-4o-mini",
-            input=[{
-                "role": "user",
-                "content": (
-                    f'A Duolingo listening exercise. The spoken sentence is:\n'
-                    f'"{transcript}"\n\n'
-                    f'Available words in the word bank (ONLY use these exact words): {available_words}\n\n'
-                    f'Select and arrange words from the bank to form the sentence you heard.\n'
-                    f'Numbers in speech may appear as words in the bank (e.g. "12" → "twelve").\n'
-                    f'Not all words need to be used. Use each word at most once.\n'
+            model="gpt-5.4",
+            input=[
+                {"role": "developer", "content": system_msg},
+                {"role": "user", "content": (
+                    f'TASK: Arrange word bank tokens to reproduce the spoken sentence.\n\n'
+                    f'SPOKEN SENTENCE (from Whisper transcription): "{transcript}"\n\n'
+                    f'AVAILABLE WORD BANK TOKENS (ONLY use these exact strings): {available_words}\n'
+                    f'Total tokens: {len(available_words)} (some are distractors)\n\n'
+                    f'RULES:\n'
+                    f'- Every token you use must EXACTLY match one item in the list.\n'
+                    f'- Contractions may be split: "don\'t" → "don" + "\'t", "we\'re" → "we" + "\'re".\n'
+                    f'- Numbers in speech may appear as words (e.g. "12" → "twelve").\n'
+                    f'- Punctuation like "." or "," may be separate tokens — include if present.\n'
+                    f'- Include ALL words needed for a complete sentence (articles, prepositions, etc.).\n'
+                    f'- Not all tokens need to be used. Ignore distractors.\n\n'
                     f'Reply with ONLY the words separated by " | " (pipe), nothing else.'
-                ),
-            }],
+                )},
+            ],
         )
         ordered = [w.strip() for w in r.output_text.strip().split("|") if w.strip()]
 
@@ -517,16 +534,27 @@ def match_english_to_vietnamese(english_word, vietnamese_options):
     try:
         options_str = ", ".join(f'"{opt}"' for opt in vietnamese_options)
         r = client.responses.create(
-            model="gpt-4o-mini",
-            input=[{
-                "role": "user",
-                "content": (
-                    f'The English word/phrase is: "{english_word}"\n'
-                    f'The Vietnamese options are: [{options_str}]\n'
-                    f'Which Vietnamese option is the correct translation? '
-                    f'Reply with ONLY the exact Vietnamese text, nothing else.'
-                ),
-            }],
+            model="gpt-5.4",
+            input=[
+                {
+                    "role": "developer",
+                    "content": (
+                        "You are an expert English-Vietnamese translator for Duolingo. "
+                        "Match the English word/phrase to the correct Vietnamese translation. "
+                        "Reply with ONLY the exact Vietnamese text from the options list."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f'ENGLISH WORD/PHRASE: "{english_word}"\n'
+                        f'VIETNAMESE OPTIONS: [{options_str}]\n\n'
+                        f'Which Vietnamese option is the correct translation of the English word/phrase? '
+                        f'Consider meaning, context, and common Duolingo vocabulary. '
+                        f'Reply with ONLY the exact Vietnamese text from the list, nothing else.'
+                    ),
+                },
+            ],
         )
         match = r.output_text.strip().strip('"').strip("'")
         print(f"    GPT match: '{english_word}' → '{match}'")
@@ -700,17 +728,24 @@ def handle_audio_fill_blank(page, result):
         try:
             options_str = ", ".join(f'{k}: "{v}"' for k, v in option_transcripts.items())
             r = client.responses.create(
-                model="gpt-4o-mini",
-                input=[{
-                    "role": "user",
-                    "content": (
-                        f'A Duolingo exercise shows this sentence with a blank: "{sentence}"\n'
-                        f'The full spoken sentence is: "{full_transcript}"\n'
-                        f'The audio options are: {options_str}\n'
-                        f'Which option number fills the blank correctly? '
-                        f'Reply with ONLY the number (e.g. "1" or "2"), nothing else.'
-                    ),
-                }],
+                model="gpt-5.4",
+                input=[
+                    {
+                        "role": "developer",
+                        "content": "You are an expert Duolingo solver. Pick the correct audio option to fill the blank. Reply with ONLY the option number.",
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f'EXERCISE: Audio fill-in-the-blank (English course for Vietnamese speakers)\n\n'
+                            f'SENTENCE WITH BLANK: "{sentence}"\n'
+                            f'FULL SPOKEN SENTENCE (from audio): "{full_transcript}"\n'
+                            f'AUDIO OPTIONS (transcribed): {options_str}\n\n'
+                            f'Which option number fills the blank to match the full spoken sentence? '
+                            f'Reply with ONLY the number (e.g. "1" or "2"), nothing else.'
+                        ),
+                    },
+                ],
             )
             correct_key = r.output_text.strip()
             print(f"  GPT picked option: {correct_key}")
@@ -952,22 +987,23 @@ def handle_listen_and_type(page, result):
     # Step 3: Extract missing word via GPT if not already found
     if not missing_word and sentence:
         prompt_parts = [
-            f'A Duolingo exercise shows this sentence with a blank: "{sentence}"',
+            'EXERCISE: Duolingo "Type the missing word" (English course for Vietnamese speakers)',
+            f'\nSENTENCE WITH BLANK: "{sentence}"',
         ]
         if full_transcript and full_transcript.strip() not in ('', '.', '. .', '...'):
-            prompt_parts.append(f'The full spoken sentence is: "{full_transcript}"')
+            prompt_parts.append(f'FULL SPOKEN SENTENCE (from audio): "{full_transcript}"')
         if prefix:
             prompt_parts.append(
-                f'The blank already has a pre-filled prefix: "{prefix}". '
-                f'The missing word MUST start with "{prefix}".'
+                f'PRE-FILLED PREFIX in the blank: "{prefix}" — the missing word MUST start with "{prefix}".'
             )
         prompt_parts.append(
-            'What is the missing word or phrase that fills the blank? '
+            '\nWhat is the SINGLE missing word or phrase that fills the blank? '
+            'Consider English grammar, vocabulary, and the sentence context. '
             'Reply with ONLY the missing word(s), nothing else.'
         )
         try:
             r = client.responses.create(
-                model="gpt-4o-mini",
+                model="gpt-5.4",
                 input=[{"role": "user", "content": "\n".join(prompt_parts)}],
             )
             missing_word = r.output_text.strip().strip('"').strip("'").rstrip(".")
@@ -1017,8 +1053,16 @@ def analyze_screen(img):
     b64 = base64.b64encode(img).decode()
 
     r = client.responses.create(
-        model="gpt-4o",
+        model="gpt-5.4",
         input=[
+            {
+                "role": "developer",
+                "content": (
+                    "You are an expert Duolingo exercise solver with perfect accuracy. "
+                    "Analyze screenshots precisely. Extract ALL text exactly as shown — "
+                    "never summarize or paraphrase. Return valid JSON only."
+                ),
+            },
             {
                 "role": "user",
                 "content": [
@@ -1173,30 +1217,42 @@ def refine_multiple_choice_actions(page, result):
         print(f"  📋 Visible options: {[o['text'] for o in visible_options]}")
         print(f"  🔄 Picking correct option from visible choices...")
 
+        system_msg = (
+            'You are an expert Duolingo solver for an English course for Vietnamese speakers. '
+            'Select the correct option(s) based on grammar, meaning, and context. '
+            'Reply with ONLY the option number(s).'
+        )
+
         options_str = "\n".join(f'  {o["index"]}. {o["text"]}' for o in visible_options)
         prompt_parts = [
-            f'A Duolingo {q_type} exercise.',
-            f'\nQuestion: {question}',
+            f'EXERCISE TYPE: Duolingo {q_type}',
+            f'COURSE: English for Vietnamese speakers (translating between Vietnamese ↔ English)',
+            f'\nQUESTION: {question}',
         ]
         if cached:
-            prompt_parts.append(f'Previously known correct answer: {cached}')
+            prompt_parts.append(f'\nKNOWN CORRECT ANSWER (previously verified): {cached}')
         if ai_answer and ai_answer != cached:
-            prompt_parts.append(f'AI suggested answer: {ai_answer}')
-        prompt_parts.append(f'\nVisible options:\n{options_str}')
+            prompt_parts.append(f'AI SUGGESTED ANSWER: {ai_answer}')
+        prompt_parts.append(f'\nVISIBLE OPTIONS:\n{options_str}')
         if q_type == "checkbox":
             prompt_parts.append(
-                '\nWhich option(s) are correct? Reply with ONLY the number(s) separated by commas.\n'
+                '\nSelect ALL correct options. Consider the full context/passage above.\n'
+                'Reply with ONLY the number(s) separated by commas.\n'
                 'Example: 1,2'
             )
         else:
             prompt_parts.append(
-                '\nWhich option number is correct? Reply with ONLY the number, nothing else.\n'
+                '\nSelect the ONE correct option. Consider grammar, vocabulary, and context.\n'
+                'Reply with ONLY the number, nothing else.\n'
                 'Example: 1'
             )
 
         r = client.responses.create(
-            model="gpt-4o-mini",
-            input=[{"role": "user", "content": "\n".join(prompt_parts)}],
+            model="gpt-5.4",
+            input=[
+                {"role": "developer", "content": system_msg},
+                {"role": "user", "content": "\n".join(prompt_parts)},
+            ],
         )
         picked = r.output_text.strip().replace(" ", "")
 
@@ -1276,36 +1332,50 @@ def refine_word_bank_actions(page, result):
 
     print(f"  🔄 Arranging words using actual word bank...")
     try:
+        system_msg = (
+            'You are an expert Duolingo solver for an English course for Vietnamese speakers. '
+            'Your task is to arrange word bank tokens into the correct English sentence. '
+            'You must ONLY output words separated by " | " — nothing else.'
+        )
+
         prompt_parts = [
-            'A Duolingo word bank exercise. You must click words from the word bank IN THE CORRECT ORDER '
-            'to form a sentence or fill in blanks.',
-            f'\nQuestion/sentence shown on screen: {question}',
+            'TASK: Arrange word bank tokens to form the correct English translation.',
+            f'\nSOURCE (Vietnamese question/sentence on screen): {question}',
         ]
         if cached:
-            prompt_parts.append(f'Known correct answer: {cached}')
+            prompt_parts.append(f'\nKNOWN CORRECT ANSWER (use this to determine exact word order): {cached}')
         if ai_answer and ai_answer != cached:
-            prompt_parts.append(f'AI suggested answer: {ai_answer}')
+            prompt_parts.append(f'AI SUGGESTED ANSWER: {ai_answer}')
         prompt_parts.append(
-            f'\nAvailable words in the word bank (you can ONLY use these exact words): {available_words}'
+            f'\nAVAILABLE WORD BANK TOKENS (you can ONLY use these exact strings): {available_words}'
         )
         prompt_parts.append(
-            '\nArrange the words in the correct order. Not all words need to be used. '
-            'Use each word at most once.\n'
-            'CRITICAL RULES:\n'
-            '- The order matters — each word fills the next blank in the sentence.\n'
-            '- Words may be SPLIT across multiple tokens. For example, "o\'clock" might be two separate '
-            'tokens: "o" and "\'clock". You MUST include ALL parts.\n'
-            '- Similarly, "don\'t" might be "don" + "\'t", or compound words may be split.\n'
-            '- Compare your answer with the available tokens — every token you use must EXACTLY match '
-            'one item in the available list.\n'
-            '- If a known correct answer is provided, use it to determine the exact word order.\n'
-            'Reply with ONLY the words separated by " | " (pipe), nothing else.\n'
-            'Example: Can | we | check | out | at | four | o | \'clock'
+            f'Total tokens in bank: {len(available_words)} (some are distractors — do NOT use all of them)'
+        )
+        prompt_parts.append(
+            '\nCRITICAL RULES:\n'
+            '1. EVERY token you output must EXACTLY match one item in the available list (case-sensitive).\n'
+            '2. The answer must be a complete, grammatically correct English sentence.\n'
+            '3. Include ALL necessary words: articles (a, an, the), prepositions (to, for, in, at, on), '
+            'pronouns (I, me, you, he, she, it, we, they, them), and auxiliary verbs (is, are, was, were, '
+            'will, have, has, do, does, did, can, could, would, should).\n'
+            '4. Contractions may be SPLIT across tokens: "don\'t" → "don" + "\'t", "Let\'s" → "Let" + "\'s", '
+            '"we\'re" → "we" + "\'re", "I\'ll" → "I" + "\'ll". Include ALL parts.\n'
+            '5. Compound words may be split: "o\'clock" → "o" + "\'clock", "check" + "something" are separate.\n'
+            '6. Punctuation like "." or "," may be a separate token — include it if present in the bank.\n'
+            '7. If a KNOWN CORRECT ANSWER is provided, use it as the ground truth to determine word order. '
+            'Map each word in the answer to the corresponding token in the bank.\n'
+            '8. Distractor words exist in the bank — ignore words that do not belong in the sentence.\n'
+            '\nReply with ONLY the words separated by " | " (pipe), nothing else.\n'
+            'Example: Excuse | me | , | I | have | to | check | something | .'
         )
 
         r = client.responses.create(
-            model="gpt-4o-mini",
-            input=[{"role": "user", "content": "\n".join(prompt_parts)}],
+            model="gpt-5.4",
+            input=[
+                {"role": "developer", "content": system_msg},
+                {"role": "user", "content": "\n".join(prompt_parts)},
+            ],
         )
         ordered = [w.strip() for w in r.output_text.strip().split("|") if w.strip()]
 
