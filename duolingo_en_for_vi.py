@@ -1428,7 +1428,7 @@ def get_all_word_tokens(page):
                     if not loc.is_visible(timeout=200):
                         continue
                     full_text = loc.inner_text(timeout=200).strip()
-                    if not full_text or _is_ui_button(full_text):
+                    if not full_text:
                         continue
                     display_text, secondary = extract_display_text(full_text)
 
@@ -2614,6 +2614,29 @@ def main():
 
                 consecutive_no_question = 0
                 question_count += 1
+
+                if question_count > 50:
+                    print(f"  ⚠ Lesson exceeded 50 questions ({question_count}) — treating as stuck, restarting...")
+                    page.goto("https://www.duolingo.com/learn")
+                    page.wait_for_load_state("domcontentloaded")
+                    page.wait_for_timeout(2000)
+                    hearts = get_hearts(page)
+                    if hearts >= 0:
+                        print(f"  ❤️ Hearts: {hearts}/5")
+                    if hearts == 0:
+                        print("  💔 No hearts left, starting practice to earn one...")
+                        start_practice_mode(page)
+                        in_practice_mode = True
+                    else:
+                        start_lesson(page)
+                        in_practice_mode = False
+                    consecutive_no_question = 0
+                    wrong_count = 0
+                    MAX_WRONG_PER_LESSON = random.randint(0, 1)
+                    question_count = 0
+                    context.storage_state(path=SESSION_FILE)
+                    print("\n🆕 New lesson started!")
+                    continue
 
                 # Check if we're on a feedback screen (answer already submitted)
                 # Only click Continue if a feedback banner is visible, not on a fresh question

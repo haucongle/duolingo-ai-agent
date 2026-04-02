@@ -403,7 +403,7 @@ def get_all_word_tokens(page):
                     if not loc.is_visible(timeout=200):
                         continue
                     full_text = loc.inner_text(timeout=200).strip()
-                    if not full_text or _is_ui_button(full_text):
+                    if not full_text:
                         continue
                     display_text, secondary = extract_display_text(full_text)
                     tokens.append({
@@ -471,7 +471,7 @@ def get_word_bank_available_tokens(page):
                     if loc.get_attribute("disabled") is not None:
                         continue
                     full_text = loc.inner_text(timeout=200).strip()
-                    if not full_text or _is_ui_button(full_text):
+                    if not full_text:
                         continue
                     display_text, secondary = extract_display_text(full_text)
                     tokens.append({
@@ -507,7 +507,7 @@ def get_word_bank_available_tokens(page):
                     if loc.get_attribute("disabled") is not None:
                         continue
                     full_text = loc.inner_text(timeout=200).strip()
-                    if not full_text or _is_ui_button(full_text):
+                    if not full_text:
                         continue
                     display_text, secondary = extract_display_text(full_text)
                     tokens.append({
@@ -1618,6 +1618,11 @@ def main():
                         q_elapsed = time.time() - q_start
                         print(f"  ⏱ Question took {q_elapsed:.1f}s")
                         continue
+
+                    if question_count > 50:
+                        print(f"  ⚠ Session exceeded 50 questions ({question_count}) — treating as stuck, starting new session...")
+                        total_questions += question_count
+                        break
 
                     if consecutive_no_feedback >= MAX_NO_FEEDBACK:
                         print(f"  🔄 No feedback detected for {consecutive_no_feedback} consecutive questions — restarting lesson")

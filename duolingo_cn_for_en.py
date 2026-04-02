@@ -1438,6 +1438,18 @@ def main():
                 consecutive_no_question = 0
                 question_count += 1
 
+                if question_count > 50:
+                    print(f"  ⚠ Lesson exceeded 50 questions ({question_count}) — treating as stuck, restarting...")
+                    start_practice_mode(page)
+                    in_practice_mode = True
+                    consecutive_no_question = 0
+                    wrong_count = 0
+                    MAX_WRONG_PER_LESSON = 0
+                    question_count = 0
+                    context.storage_state(path=SESSION_FILE)
+                    print("\n🆕 New practice started!")
+                    continue
+
                 # Check if Continue button is already enabled (answer already submitted)
                 continue_ready = False
                 for cont_text in ["Continue", "CONTINUE"]:
