@@ -1,0 +1,49 @@
+name: Duolingo Practice XP Farm (Night)
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: '0 18 * * *'   # 1am–6am Vietnam (UTC+7)
+  workflow_dispatch:
+
+jobs:
+  practice-farm:
+    name: Practice XP Farm (EN for VI) – Night
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install python-dotenv playwright openai
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run practice farm
+        env:
+          VI_DUO_EMAIL: ${{ secrets.VI_DUO_EMAIL }}
+          VI_DUO_PASSWORD: ${{ secrets.VI_DUO_PASSWORD }}
+          VI_DUO_JWT: ${{ secrets.VI_DUO_JWT }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          HEADLESS: 'true'
+        run: python duolingo_practice_farm.py
+
+      - name: Save artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: practice-debug-night-${{ github.run_number }}
+          path: |
+            vi_duo_session.json
+            stuck_debug.png
+            playwright-videos/
+          retention-days: 3
+          if-no-files-found: ignore
