@@ -1,4 +1,4 @@
-# Duolingo AI Agent
+# Duolingo AI Agent v2
 
 An AI-powered agent that automatically completes Duolingo lessons using GPT-4o Vision and OpenAI Whisper. The agent **takes screenshots like a human**, understands the exercise, and **clicks/types the answer automatically** — no HTML parsing needed.
 
