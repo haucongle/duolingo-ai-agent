@@ -38,6 +38,7 @@ MAX_WRONG_PER_LESSON = 0
 MAX_LESSONS = int(os.getenv("MAX_LESSONS", "0"))
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.4-mini")
 
 PROMPT = """You are an expert AI agent that solves Duolingo exercises automatically with perfect accuracy.
 This is a Chinese course for English speakers. Translations go English → Chinese or Chinese → English.
@@ -315,7 +316,7 @@ def handle_listening(page, result):
         )
 
         r = client.responses.create(
-            model="gpt-5.4",
+            model=CHAT_MODEL,
             input=[
                 {"role": "developer", "content": system_msg},
                 {"role": "user", "content": (
@@ -413,7 +414,7 @@ def analyze_screen(img):
     b64 = base64.b64encode(img).decode()
 
     r = client.responses.create(
-        model="gpt-5.4",
+        model=CHAT_MODEL,
         input=[
             {
                 "role": "developer",
@@ -553,7 +554,7 @@ def refine_word_bank_actions(page, result):
         )
 
         r = client.responses.create(
-            model="gpt-5.4",
+            model=CHAT_MODEL,
             input=[
                 {"role": "developer", "content": system_msg},
                 {"role": "user", "content": "\n".join(prompt_parts)},

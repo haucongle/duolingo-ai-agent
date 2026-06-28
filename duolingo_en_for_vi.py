@@ -39,6 +39,7 @@ MAX_WRONG_PER_LESSON = random.randint(0, 1)
 MAX_LESSONS = int(os.getenv("MAX_LESSONS", "0"))
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.4-mini")
 
 # Answer cache: maps question text -> correct answer (learned from Duolingo feedback)
 answer_cache = {}
@@ -432,7 +433,7 @@ def handle_listening(page, result):
         )
 
         r = client.responses.create(
-            model="gpt-5.4",
+            model=CHAT_MODEL,
             input=[
                 {"role": "developer", "content": system_msg},
                 {"role": "user", "content": (
@@ -534,7 +535,7 @@ def match_english_to_vietnamese(english_word, vietnamese_options):
     try:
         options_str = ", ".join(f'"{opt}"' for opt in vietnamese_options)
         r = client.responses.create(
-            model="gpt-5.4",
+            model=CHAT_MODEL,
             input=[
                 {
                     "role": "developer",
@@ -728,7 +729,7 @@ def handle_audio_fill_blank(page, result):
         try:
             options_str = ", ".join(f'{k}: "{v}"' for k, v in option_transcripts.items())
             r = client.responses.create(
-                model="gpt-5.4",
+                model=CHAT_MODEL,
                 input=[
                     {
                         "role": "developer",
@@ -1003,7 +1004,7 @@ def handle_listen_and_type(page, result):
         )
         try:
             r = client.responses.create(
-                model="gpt-5.4",
+                model=CHAT_MODEL,
                 input=[{"role": "user", "content": "\n".join(prompt_parts)}],
             )
             missing_word = r.output_text.strip().strip('"').strip("'").rstrip(".")
@@ -1053,7 +1054,7 @@ def analyze_screen(img):
     b64 = base64.b64encode(img).decode()
 
     r = client.responses.create(
-        model="gpt-5.4",
+        model=CHAT_MODEL,
         input=[
             {
                 "role": "developer",
@@ -1248,7 +1249,7 @@ def refine_multiple_choice_actions(page, result):
             )
 
         r = client.responses.create(
-            model="gpt-5.4",
+            model=CHAT_MODEL,
             input=[
                 {"role": "developer", "content": system_msg},
                 {"role": "user", "content": "\n".join(prompt_parts)},
@@ -1371,7 +1372,7 @@ def refine_word_bank_actions(page, result):
         )
 
         r = client.responses.create(
-            model="gpt-5.4",
+            model=CHAT_MODEL,
             input=[
                 {"role": "developer", "content": system_msg},
                 {"role": "user", "content": "\n".join(prompt_parts)},
