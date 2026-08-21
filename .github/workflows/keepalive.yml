@@ -1,0 +1,38 @@
+name: Keepalive
+
+# GitHub tắt cron của public repo sau 60 ngày không có commit mới.
+# Job này đẩy 1 commit nhỏ mỗi nửa tháng để reset bộ đếm đó.
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  schedule:
+    - cron: '23 2 1,15 * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    name: Keep scheduled workflows alive
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Push activity marker
+        run: |
+          date -u +'%Y-%m-%dT%H:%M:%SZ' > .github/last-activity.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/last-activity.txt
+          git commit -m 'chore: keepalive'
+          git push
+
+      - name: Re-arm scheduled workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow enable duolingo.yml || true
+          gh workflow enable duolingo-night.yml || true
