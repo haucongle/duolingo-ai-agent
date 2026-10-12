@@ -27,8 +27,60 @@ SESSION_FILE = "vi_duo_session.json"
 MAX_SESSIONS = int(os.getenv("MAX_LESSONS", "0"))
 PRACTICE_URL = "https://www.duolingo.com/practice"
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5-nano")
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+gemini_api_key = os.getenv("GEMINI_API_KEY")
+gemini_client = (
+    OpenAI(
+        api_key=gemini_api_key,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    )
+    if gemini_api_key
+    else None
+)
+OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5-nano")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+
+
+def ask_model(messages):
+    """Use OpenAI first; fall back to Gemini if the OpenAI request fails."""
+    responses_input = []
+    for message in messages:
+        role = "developer" if message["role"] == "system" else message["role"]
+        content = message["content"]
+        if isinstance(content, list):
+            converted = []
+            for part in content:
+                if part["type"] == "text":
+                    converted.append({"type": "input_text", "text": part["text"]})
+                elif part["type"] == "image_url":
+                    converted.append({
+                        "type": "input_image",
+                        "image_url": part["image_url"]["url"],
+                    })
+            content = converted
+        responses_input.append({"role": role, "content": content})
+
+    try:
+        response = openai_client.responses.create(
+            model=OPENAI_CHAT_MODEL,
+            input=responses_input,
+        )
+        return response.output_text.strip()
+    except Exception as openai_error:
+        if gemini_client is None:
+            raise RuntimeError(
+                "OpenAI request failed and GEMINI_API_KEY is not configured; "
+                f"OpenAI error: {openai_error}"
+            ) from openai_error
+        print(f"  ⚠ OpenAI request failed; trying Gemini: {openai_error}")
+        response = gemini_client.chat.completions.create(
+            model=GEMINI_MODEL,
+            messages=messages,
+        )
+        text = response.choices[0].message.content
+        if not text:
+            raise RuntimeError("Gemini returned an empty response") from openai_error
+        return text.strip()
 
 answer_cache = {}
 cache_fail_count = {}
@@ -317,14 +369,12 @@ def handle_listen_and_type(page, result):
             'Reply with ONLY the missing word(s), nothing else.'
         )
         try:
-            r = client.responses.create(
-                model=CHAT_MODEL,
-                input=[{"role": "user", "content": "\n".join(prompt_parts)}],
-            )
-            missing_word = r.output_text.strip().strip('"').strip("'").rstrip(".")
-            print(f"  Missing word (GPT): '{missing_word}'")
+            missing_word = ask_model([
+                {"role": "user", "content": "\n".join(prompt_parts)},
+            ]).strip('"').strip("'").rstrip(".")
+            print(f"  Missing word: '{missing_word}'")
         except Exception as e:
-            print(f"  ⚠ GPT extraction failed: {e}")
+            print(f"  ⚠ AI extraction failed: {e}")
 
     if missing_word and prefix and not missing_word.lower().startswith(prefix.lower()):
         missing_word = None
@@ -354,11 +404,9 @@ def handle_listen_and_type(page, result):
 
 def analyze_screen(img):
     b64 = base64.b64encode(img).decode()
-    r = client.responses.create(
-        model=CHAT_MODEL,
-        input=[
+    raw = ask_model([
             {
-                "role": "developer",
+                "role": "system",
                 "content": (
                     "You are an expert Duolingo exercise solver with perfect accuracy. "
                     "Analyze screenshots precisely. Extract ALL text exactly as shown — "
@@ -368,13 +416,11 @@ def analyze_screen(img):
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": PROMPT},
-                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
+                    {"type": "text", "text": PROMPT},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                 ],
             },
-        ],
-    )
-    raw = r.output_text.strip()
+        ])
     if raw.startswith("```"):
         raw = re.sub(r'^```\w*\n?', '', raw)
         raw = re.sub(r'\n?```$', '', raw)
@@ -1108,14 +1154,10 @@ def refine_multiple_choice_actions(page, result):
                 'Reply with ONLY the number, nothing else. Example: 1'
             )
 
-        r = client.responses.create(
-            model=CHAT_MODEL,
-            input=[
-                {"role": "developer", "content": system_msg},
+        picked = ask_model([
+                {"role": "system", "content": system_msg},
                 {"role": "user", "content": "\n".join(prompt_parts)},
-            ],
-        )
-        picked = r.output_text.strip().replace(" ", "")
+            ]).replace(" ", "")
         keys = [k.strip() for k in picked.split(",") if k.strip().isdigit()]
         if keys:
             matched_opts = [o for o in visible_options if str(o["index"]) in keys]
@@ -1247,14 +1289,10 @@ def refine_word_bank_actions(page, result):
             'Example: We | will | pay | them | next | week | .'
         )
 
-        r = client.responses.create(
-            model=CHAT_MODEL,
-            input=[
-                {"role": "developer", "content": system_msg},
+        ordered = [w.strip() for w in ask_model([
+                {"role": "system", "content": system_msg},
                 {"role": "user", "content": "\n".join(prompt_parts)},
-            ],
-        )
-        ordered = [w.strip() for w in r.output_text.strip().split("|") if w.strip()]
+            ]).split("|") if w.strip()]
 
         valid_ordered = []
         remaining = list(available_words)
