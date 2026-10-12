@@ -4,14 +4,14 @@ permissions:
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # 1pm–6pm Vietnam (UTC+7)
+    - cron: '0 1 * * *'   # Daily at 8:00 AM Vietnam time (UTC+7)
   workflow_dispatch:
 
 jobs:
   practice-farm:
     name: Practice XP Farm (EN for VI)
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v5
@@ -38,7 +38,7 @@ jobs:
 
       - name: Save artifacts
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: practice-debug-${{ github.run_number }}
           path: |

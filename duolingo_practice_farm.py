@@ -28,7 +28,7 @@ MAX_SESSIONS = int(os.getenv("MAX_LESSONS", "0"))
 PRACTICE_URL = "https://www.duolingo.com/practice"
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.4-mini")
+CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5-nano")
 
 answer_cache = {}
 cache_fail_count = {}

@@ -3,8 +3,6 @@ permissions:
   contents: read
 
 on:
-  schedule:
-    - cron: '0 18 * * *'   # 1am–6am Vietnam (UTC+7)
   workflow_dispatch:
 
 jobs:
