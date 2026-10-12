@@ -33,6 +33,7 @@ jobs:
           VI_DUO_PASSWORD: ${{ secrets.VI_DUO_PASSWORD }}
           VI_DUO_JWT: ${{ secrets.VI_DUO_JWT }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           HEADLESS: 'true'
         run: python duolingo_practice_farm.py
 
