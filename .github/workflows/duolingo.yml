@@ -1,15 +1,55 @@
 name: Duolingo Practice XP Farm
 permissions:
   contents: read
+  actions: read
 
+# GitHub cron hay bị trễ vài tiếng hoặc bỏ qua hẳn, nên trigger mỗi 2 tiếng
+# và để job `gate` đảm bảo mỗi ngày (giờ VN) chỉ farm đúng 1 lần.
 on:
   schedule:
-    - cron: '17 1 * * *'   # Daily at ~8:17 AM Vietnam time (UTC+7), off the top of the hour to avoid GitHub delays
+    - cron: '37 */2 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: duolingo-practice-farm
+  cancel-in-progress: false
+
 jobs:
+  gate:
+    name: Check if already ran today
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # 00:00 hôm nay theo giờ VN, đổi sang UTC
+          start=$(date -u -d "@$(TZ=Asia/Ho_Chi_Minh date -d "$(TZ=Asia/Ho_Chi_Minh date +%F)" +%s)" +%Y-%m-%dT%H:%M:%SZ)
+          runs=$(gh api -X GET "repos/$REPO/actions/workflows/duolingo.yml/runs" \
+            -f created=">=$start" -f per_page=100 \
+            --jq ".workflow_runs[] | select(.id != $RUN_ID) | .id")
+          for id in $runs; do
+            n=$(gh api "repos/$REPO/actions/runs/$id/jobs" \
+              --jq '[.jobs[] | select(.name == "Practice XP Farm (EN for VI)" and .conclusion != "skipped")] | length')
+            if [ "$n" -gt 0 ]; then
+              echo "Run $id already farmed today (since $start), skipping."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          done
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+
   practice-farm:
     name: Practice XP Farm (EN for VI)
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
