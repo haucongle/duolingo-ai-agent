@@ -7,7 +7,7 @@ permissions:
 # và để job `gate` đảm bảo mỗi ngày (giờ VN) chỉ farm đúng 1 lần.
 on:
   schedule:
-    - cron: '37 */2 * * *'
+    - cron: '41 */2 * * *'
   workflow_dispatch:
 
 concurrency:
