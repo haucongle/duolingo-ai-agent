@@ -9,6 +9,7 @@ import json
 import os
 import random
 import re
+import sys
 import time
 import traceback
 from dotenv import load_dotenv
@@ -27,60 +28,222 @@ SESSION_FILE = "vi_duo_session.json"
 MAX_SESSIONS = int(os.getenv("MAX_LESSONS", "0"))
 PRACTICE_URL = "https://www.duolingo.com/practice"
 
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-gemini_client = (
-    OpenAI(
-        api_key=gemini_api_key,
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-    )
-    if gemini_api_key
-    else None
-)
+# ---------------------------------------------------------------------------
+# AI provider chain: OpenAI -> Gemini models -> Groq (text only) -> Cloudflare -> Mistral -> Z.AI
+# ---------------------------------------------------------------------------
+# A provider is only used when its API key is set. When one runs out of daily
+# quota it is skipped for the rest of the run; per-minute limits and transient
+# errors only put it on a short cooldown. Text-only providers (Groq's gpt-oss)
+# are skipped for requests that carry a screenshot.
+# Order follows measured accuracy on screenshots; Mistral's small model is the weakest
+# but has by far the largest quota, so it sits near the end as a last resort.
+
 OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-5-nano")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+# Gemini quotas are per project *per model*, so each model is its own link in the chain.
+GEMINI_MODELS = [
+    m.strip() for m in os.getenv(
+        "GEMINI_MODELS",
+        "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.5-flash,gemini-2.5-flash",
+    ).split(",") if m.strip()
+]
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "ministral-8b-latest")
+GROQ_TEXT_MODEL = os.getenv("GROQ_TEXT_MODEL", "openai/gpt-oss-120b")
+CLOUDFLARE_MODEL = os.getenv("CLOUDFLARE_MODEL", "@cf/meta/llama-4-scout-17b-16e-instruct")
+ZAI_BASE_URL = os.getenv("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4/")
+ZAI_MODEL = os.getenv("ZAI_MODEL", "glm-4.6v-flash")
+
+DAILY_QUOTA_MARKERS = (
+    "perday", "insufficient_quota", "no credits", "spend limit",
+    "insufficient balance",  # Z.AI code 1113 on paid models without a resource package
+    "daily free allocation",  # Cloudflare Workers AI: 10,000 free neurons/day used up
+    "requests per day", "tokens per day",  # Groq RPD / TPD limits
+)
+OVERLOAD_MARKERS = ("overloaded", "high demand")  # 429/503 meaning "try again shortly"
+TRANSIENT_COOLDOWN_S = 15
+DEFAULT_RATE_LIMIT_COOLDOWN_S = 60
+MAX_COOLDOWN_S = 600  # a longer retry hint than this is effectively "out for today"
+
+
+class AllProvidersExhausted(BaseException):
+    """No AI provider is left. Derives from BaseException so the many
+    `except Exception` blocks around ask_model() cannot swallow it and keep looping."""
+
+
+class Provider:
+    def __init__(self, name, model, client, api="chat", vision=True):
+        self.name = name
+        self.vision = vision  # False: text-only model, never sent a screenshot
+        self.model = model
+        self.client = client
+        self.api = api  # "responses" (OpenAI) or "chat" (OpenAI-compatible)
+        self.dead_reason = None
+        self.cooldown_until = 0.0
+        self.calls = 0
+
+    def usable(self):
+        return self.dead_reason is None and time.time() >= self.cooldown_until
+
+    def ask(self, messages):
+        if self.api == "responses":
+            responses_input = []
+            for message in messages:
+                role = "developer" if message["role"] == "system" else message["role"]
+                content = message["content"]
+                if isinstance(content, list):
+                    converted = []
+                    for part in content:
+                        if part["type"] == "text":
+                            converted.append({"type": "input_text", "text": part["text"]})
+                        elif part["type"] == "image_url":
+                            converted.append({
+                                "type": "input_image",
+                                "image_url": part["image_url"]["url"],
+                            })
+                    content = converted
+                responses_input.append({"role": role, "content": content})
+            response = self.client.responses.create(model=self.model, input=responses_input)
+            text = response.output_text
+        else:
+            response = self.client.chat.completions.create(
+                model=self.model, messages=messages,
+            )
+            text = response.choices[0].message.content
+        if not text or not text.strip():
+            raise RuntimeError("empty response")
+        return text.strip()
+
+
+def _build_providers():
+    providers = []
+    key = os.getenv("OPENAI_API_KEY")
+    if key:
+        providers.append(Provider("openai", OPENAI_CHAT_MODEL, OpenAI(api_key=key), api="responses"))
+    key = os.getenv("GEMINI_API_KEY")
+    if key:
+        gemini = OpenAI(
+            api_key=key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+        for model in GEMINI_MODELS:
+            providers.append(Provider(f"gemini/{model}", model, gemini))
+    key = os.getenv("GROQ_API_KEY")
+    if key:
+        providers.append(Provider(
+            f"groq/{GROQ_TEXT_MODEL}", GROQ_TEXT_MODEL,
+            OpenAI(api_key=key, base_url="https://api.groq.com/openai/v1"),
+            vision=False,
+        ))
+    key = os.getenv("CLOUDFLARE_API_KEY")
+    account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID")
+    if key and not account_id:
+        print("  ⚠ CLOUDFLARE_API_KEY is set but CLOUDFLARE_ACCOUNT_ID is missing; skipping Cloudflare")
+    elif key:
+        providers.append(Provider(
+            f"cloudflare/{CLOUDFLARE_MODEL}", CLOUDFLARE_MODEL,
+            OpenAI(
+                api_key=key,
+                base_url=f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+            ),
+        ))
+    key = os.getenv("MISTRAL_API_KEY")
+    if key:
+        providers.append(Provider(
+            f"mistral/{MISTRAL_MODEL}", MISTRAL_MODEL,
+            OpenAI(api_key=key, base_url="https://api.mistral.ai/v1"),
+        ))
+    key = os.getenv("ZAI_API_KEY")
+    if key:
+        providers.append(Provider(
+            f"zai/{ZAI_MODEL}", ZAI_MODEL, OpenAI(api_key=key, base_url=ZAI_BASE_URL),
+        ))
+    return providers
+
+
+PROVIDERS = _build_providers()
+
+
+def _retry_delay_s(text):
+    """Seconds from a 'retry in 1h2m3.4s' / 'try again in 850ms' / "retryDelay': '17s'" hint, or None."""
+    m = re.search(r"(?:retry|try again) in ([\d.]+)ms", text)
+    if m:
+        return float(m.group(1)) / 1000
+    m = re.search(r"(?:retry|try again) in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s", text)
+    if m:
+        h, mi, sec = m.groups()
+        return int(h or 0) * 3600 + int(mi or 0) * 60 + float(sec)
+    m = re.search(r"retrydelay\W+(\d+)s", text)
+    return float(m.group(1)) if m else None
+
+
+def _handle_provider_error(provider, error):
+    """Mark the provider dead, or put it on cooldown, depending on the error."""
+    text = str(error).lower()
+    status = getattr(error, "status_code", None)
+    brief = str(error).replace("\n", " ")[:160]
+
+    if any(marker in text for marker in DAILY_QUOTA_MARKERS):
+        provider.dead_reason = "daily quota exhausted"
+    elif status == 429:
+        if any(marker in text for marker in OVERLOAD_MARKERS):
+            provider.cooldown_until = time.time() + TRANSIENT_COOLDOWN_S
+            print(f"  ⚠ {provider.name} overloaded; trying next provider")
+            return
+        else:
+            delay = _retry_delay_s(text) or DEFAULT_RATE_LIMIT_COOLDOWN_S
+            if delay > MAX_COOLDOWN_S:
+                provider.dead_reason = f"rate limited for {delay:.0f}s (treated as exhausted)"
+            else:
+                provider.cooldown_until = time.time() + delay + 1
+                print(f"  ⏸ {provider.name}: rate limited, cooling down {delay:.0f}s")
+                return
+    elif status in (401, 403, 404):
+        provider.dead_reason = f"HTTP {status} (bad key or model unavailable)"
+    else:
+        provider.cooldown_until = time.time() + TRANSIENT_COOLDOWN_S
+        print(f"  ⚠ {provider.name} failed ({brief}); trying next provider")
+        return
+    print(f"  🚫 {provider.name} disabled for this run: {provider.dead_reason}")
+
+
+def _has_image(messages):
+    return any(
+        isinstance(m["content"], list) and any(part.get("type") == "image_url" for part in m["content"])
+        for m in messages
+    )
 
 
 def ask_model(messages):
-    """Use OpenAI first; fall back to Gemini if the OpenAI request fails."""
-    responses_input = []
-    for message in messages:
-        role = "developer" if message["role"] == "system" else message["role"]
-        content = message["content"]
-        if isinstance(content, list):
-            converted = []
-            for part in content:
-                if part["type"] == "text":
-                    converted.append({"type": "input_text", "text": part["text"]})
-                elif part["type"] == "image_url":
-                    converted.append({
-                        "type": "input_image",
-                        "image_url": part["image_url"]["url"],
-                    })
-            content = converted
-        responses_input.append({"role": role, "content": content})
+    """Ask the first usable provider in the chain; fall through on failure."""
+    needs_vision = _has_image(messages)
+    candidates = [p for p in PROVIDERS if p.vision or not needs_vision]
+    while True:
+        for provider in candidates:
+            if not provider.usable():
+                continue
+            try:
+                text = provider.ask(messages)
+                provider.calls += 1
+                return text
+            except Exception as e:
+                _handle_provider_error(provider, e)
 
-    try:
-        response = openai_client.responses.create(
-            model=OPENAI_CHAT_MODEL,
-            input=responses_input,
-        )
-        return response.output_text.strip()
-    except Exception as openai_error:
-        if gemini_client is None:
-            raise RuntimeError(
-                "OpenAI request failed and GEMINI_API_KEY is not configured; "
-                f"OpenAI error: {openai_error}"
-            ) from openai_error
-        print(f"  ⚠ OpenAI request failed; trying Gemini: {openai_error}")
-        response = gemini_client.chat.completions.create(
-            model=GEMINI_MODEL,
-            messages=messages,
-        )
-        text = response.choices[0].message.content
-        if not text:
-            raise RuntimeError("Gemini returned an empty response") from openai_error
-        return text.strip()
+        alive = [p for p in candidates if p.dead_reason is None]
+        if not alive:
+            raise AllProvidersExhausted("All AI providers are exhausted or unavailable.")
+        # Everything left is cooling down: wait for the soonest one.
+        wait = max(min(p.cooldown_until for p in alive) - time.time(), 1)
+        print(f"  ⏳ All providers cooling down, waiting {wait:.0f}s")
+        time.sleep(wait)
+
+
+def print_provider_summary():
+    print("\n🤖 AI providers:")
+    if not PROVIDERS:
+        print("  (none configured)")
+    for p in PROVIDERS:
+        status = f"disabled: {p.dead_reason}" if p.dead_reason else "ok"
+        print(f"  {p.name}: {p.calls} calls ({status})")
+
 
 answer_cache = {}
 cache_fail_count = {}
@@ -1880,4 +2043,14 @@ def main():
             pass
 
 
-main()
+if not PROVIDERS:
+    sys.exit("No AI provider configured: set OPENAI_API_KEY, GEMINI_API_KEY, MISTRAL_API_KEY or ZAI_API_KEY.")
+
+print("🤖 AI provider chain: " + " → ".join(p.name for p in PROVIDERS))
+try:
+    main()
+except AllProvidersExhausted as e:
+    # Expected end state for an unlimited run: stop now instead of burning CI minutes on 429s.
+    print(f"\n🛑 {e} Stopping the run.")
+finally:
+    print_provider_summary()

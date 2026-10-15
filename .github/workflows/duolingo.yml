@@ -4,7 +4,10 @@ permissions:
   actions: read
 
 # GitHub cron hay bị trễ vài tiếng hoặc bỏ qua hẳn, nên trigger mỗi 2 tiếng
-# và để job `gate` đảm bảo mỗi ngày (giờ VN) chỉ farm đúng 1 lần.
+# và để job `gate` đảm bảo mỗi "ngày" chỉ farm đúng 1 lần.
+# "Ngày" ở đây tính theo UTC (00:00 UTC = 07:00 giờ VN) vì hạn mức theo ngày của
+# Gemini reset đúng mốc đó: mỗi lần farm được dùng trọn một chu kỳ hạn mức mới.
+# Script tự dừng khi mọi AI provider hết hạn mức nên timeout chỉ là mức chặn trên.
 on:
   schedule:
     - cron: '41 */2 * * *'
@@ -31,8 +34,8 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          # 00:00 hôm nay theo giờ VN, đổi sang UTC
-          start=$(date -u -d "@$(TZ=Asia/Ho_Chi_Minh date -d "$(TZ=Asia/Ho_Chi_Minh date +%F)" +%s)" +%Y-%m-%dT%H:%M:%SZ)
+          # 00:00 UTC hôm nay (= 07:00 giờ VN, lúc hạn mức Gemini reset)
+          start=$(date -u +%Y-%m-%dT00:00:00Z)
           runs=$(gh api -X GET "repos/$REPO/actions/workflows/duolingo.yml/runs" \
             -f created=">=$start" -f per_page=100 \
             --jq ".workflow_runs[] | select(.id != $RUN_ID) | .id")
@@ -51,7 +54,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 300
 
     steps:
       - uses: actions/checkout@v5
@@ -74,6 +77,11 @@ jobs:
           VI_DUO_JWT: ${{ secrets.VI_DUO_JWT }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           HEADLESS: 'true'
         run: python duolingo_practice_farm.py
 
