@@ -1,0 +1,49 @@
+name: Daily XP Report
+permissions:
+  contents: read
+  issues: write
+
+# Mỗi sáng comment XP của ngày hôm trước vào issue "XP report" (assign cho chủ repo),
+# GitHub gửi mail thông báo cho mỗi comment. Ngày Duolingo của tài khoản tính theo UTC
+# (bắt đầu 07:00 giờ VN), nên chạy lúc 00:30 UTC = 07:30 giờ VN, khi ngày trước đã chốt.
+# Cron có trễ vài tiếng cũng không sao vì luôn báo cáo ngày đã kết thúc.
+on:
+  schedule:
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  report:
+    name: Email yesterday's XP
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install python-dotenv
+
+      - name: Build report
+        env:
+          VI_DUO_JWT: ${{ secrets.VI_DUO_JWT }}
+        run: python xp_report.py daily > "$RUNNER_TEMP/report.md"
+
+      - name: Comment on the XP report issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          gh label create xp-report --color 58CC02 --description "Daily XP report" --force
+          issue=$(gh issue list --label xp-report --state open --json number --jq '.[0].number')
+          if [ -z "$issue" ]; then
+            issue=$(gh issue create --title "🦉 XP report" --label xp-report --assignee "$OWNER" \
+              --body "Báo cáo XP hằng ngày của practice farm. Mỗi comment là một ngày; GitHub gửi mail cho người được assign." \
+              | grep -o '[0-9]*$')
+          fi
+          gh issue comment "$issue" --body-file "$RUNNER_TEMP/report.md"

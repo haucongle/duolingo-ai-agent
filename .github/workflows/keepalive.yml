@@ -36,3 +36,4 @@ jobs:
         run: |
           gh workflow enable duolingo.yml || true
           gh workflow enable duolingo-night.yml || true
+          gh workflow enable xp-report.yml || true

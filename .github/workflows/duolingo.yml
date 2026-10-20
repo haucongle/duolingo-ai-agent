@@ -81,6 +81,12 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
+      - name: Snapshot XP before the run
+        continue-on-error: true
+        env:
+          VI_DUO_JWT: ${{ secrets.VI_DUO_JWT }}
+        run: python xp_report.py snapshot "$RUNNER_TEMP/xp_before.txt"
+
       - name: Run practice farm
         env:
           VI_DUO_EMAIL: ${{ secrets.VI_DUO_EMAIL }}
@@ -95,6 +101,14 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           HEADLESS: 'true'
         run: python duolingo_practice_farm.py
+
+      # Ghi XP kiếm được vào Job Summary (trang của run), kể cả khi farm lỗi hay hết timeout.
+      - name: XP report
+        if: always()
+        continue-on-error: true
+        env:
+          VI_DUO_JWT: ${{ secrets.VI_DUO_JWT }}
+        run: python xp_report.py run "$RUNNER_TEMP/xp_before.txt"
 
       - name: Save artifacts
         if: always()
