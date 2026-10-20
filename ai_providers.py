@@ -57,9 +57,11 @@ DAILY_QUOTA_MARKERS = (
     "insufficient balance",  # Z.AI code 1113 on paid models without a resource package
     "daily free allocation",  # Cloudflare Workers AI: 10,000 free neurons/day used up
     "requests per day", "tokens per day",  # Groq RPD / TPD limits
+    "budget exhausted",  # Mistral 402 billing_api_budget_exhausted
 )
 OVERLOAD_MARKERS = ("overloaded", "high demand")  # 429/503 meaning "try again shortly"
 TRANSIENT_COOLDOWN_S = 15
+MAX_TRANSIENT_FAILURES = 20  # this many overloads/errors in a row without a success = out for this run
 DEFAULT_RATE_LIMIT_COOLDOWN_S = 60
 MAX_COOLDOWN_S = 600  # a longer retry hint than this is effectively "out for today"
 
@@ -79,6 +81,7 @@ class Provider:
         self.dead_reason = None
         self.cooldown_until = 0.0
         self.calls = 0
+        self.transient_failures = 0  # consecutive, reset on success
 
     def usable(self):
         return self.dead_reason is None and time.time() >= self.cooldown_until
@@ -181,12 +184,11 @@ def _handle_provider_error(provider, error):
     status = getattr(error, "status_code", None)
     brief = str(error).replace("\n", " ")[:160]
 
-    if any(marker in text for marker in DAILY_QUOTA_MARKERS):
+    if status == 402 or any(marker in text for marker in DAILY_QUOTA_MARKERS):
         provider.dead_reason = "daily quota exhausted"
     elif status == 429:
         if any(marker in text for marker in OVERLOAD_MARKERS):
-            provider.cooldown_until = time.time() + TRANSIENT_COOLDOWN_S
-            print(f"  ⚠ {provider.name} overloaded; trying next provider")
+            _transient_failure(provider, "overloaded")
             return
         else:
             delay = _retry_delay_s(text) or DEFAULT_RATE_LIMIT_COOLDOWN_S
@@ -199,10 +201,20 @@ def _handle_provider_error(provider, error):
     elif status in (401, 403, 404):
         provider.dead_reason = f"HTTP {status} (bad key or model unavailable)"
     else:
-        provider.cooldown_until = time.time() + TRANSIENT_COOLDOWN_S
-        print(f"  ⚠ {provider.name} failed ({brief}); trying next provider")
+        _transient_failure(provider, f"failed ({brief})")
         return
     print(f"  🚫 {provider.name} disabled for this run: {provider.dead_reason}")
+
+
+def _transient_failure(provider, what):
+    """Cool down briefly, but give up on a provider that keeps failing without ever answering."""
+    provider.transient_failures += 1
+    if provider.transient_failures >= MAX_TRANSIENT_FAILURES:
+        provider.dead_reason = f"{what} {provider.transient_failures}x in a row"
+        print(f"  🚫 {provider.name} disabled for this run: {provider.dead_reason}")
+        return
+    provider.cooldown_until = time.time() + TRANSIENT_COOLDOWN_S
+    print(f"  ⚠ {provider.name} {what}; trying next provider")
 
 
 def _ordered(providers, order):
@@ -251,6 +263,7 @@ def ask_model(messages, require_vision=False, max_wait_s=None):
             try:
                 text = provider.ask(messages)
                 provider.calls += 1
+                provider.transient_failures = 0
                 return text
             except Exception as e:
                 _handle_provider_error(provider, e)
