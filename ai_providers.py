@@ -261,7 +261,9 @@ def ask_model(messages, require_vision=False, max_wait_s=None):
             if not provider.usable():
                 continue
             try:
+                t0 = time.time()
                 text = provider.ask(messages)
+                print(f"  🤖 {provider.name} {'read' if needs_vision else 'solve'} {time.time() - t0:.1f}s")
                 provider.calls += 1
                 provider.transient_failures = 0
                 return text

@@ -1734,6 +1734,16 @@ def main():
                             q_type = "listen_and_type"
                             result["type"] = "listen_and_type"
 
+                    # The model often labels a type-the-missing-word exercise "word_bank". If the question
+                    # has a blank and the page shows no word-bank tokens, it is really a text input.
+                    if q_type == "word_bank" and "_" in f"{question} {result.get('sentence', '')}":
+                        if not get_word_bank_available_tokens(page):
+                            print("  🔄 Reclassified word_bank → listen_and_type (blank, no word bank on page)")
+                            q_type = "listen_and_type"
+                            result["type"] = "listen_and_type"
+                            if not result.get("sentence"):
+                                result["sentence"] = question
+
                     # Fill-in-the-blank — infer from context/cache
                     if q_type == "listen_and_type":
                         human_sleep(0.05, 0.15)
